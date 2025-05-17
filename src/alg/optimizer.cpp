@@ -95,7 +95,7 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
     std::cout << "Solving triple-row problem for rows " << row_start << " to " << (row_end - 1) << std::endl;
     
     // Extract cells for each row in the triple-row problem
-    std::vector<std::vector<Cell*>> cells_in_rows;
+    std::vector< std::vector<Cell*> > cells_in_rows;
     for (int r = row_start; r < row_end; r++) {
         if (r < static_cast<int>(cells_by_row.size())) {
             cells_in_rows.push_back(cells_by_row[r]);
@@ -165,7 +165,7 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
  * @brief Initialize the DAG for a triple-row problem
  */
 DPNode* Optimizer::initializeDAG(int row_start, int row_end, 
-                               const std::vector<std::vector<Cell*>>& cells_in_rows) {
+                               const std::vector< std::vector<Cell*> >& cells_in_rows) {
     // Create source node with initial state
     CompactState initial_state;
     initial_state.site = 0;
@@ -193,7 +193,7 @@ DPNode* Optimizer::initializeDAG(int row_start, int row_end,
  */
 void Optimizer::processSite(int site, std::queue<DPNode*>& queue,
                           std::unordered_map<CompactState, DPNode*, CompactStateHasher>& node_lookup_table,
-                          const std::vector<std::vector<Cell*>>& cells_in_rows,
+                          const std::vector< std::vector<Cell*> >& cells_in_rows,
                           const std::vector<Staple>& prev_staples,
                           int row_start) {
     // Process all nodes at the current site
@@ -240,7 +240,7 @@ void Optimizer::processSite(int site, std::queue<DPNode*>& queue,
             DPNode* target_node = getOrCreateNode(target_state, queue, node_lookup_table);
             
             // Update benefit
-            updateBenefit(node, target_node, site, ext, prev_staples, row_start);
+            updateBenefit(node, target_node, site, ext, prev_staples, row_start, cells_in_rows);
         }
     }
 }
@@ -249,7 +249,7 @@ void Optimizer::processSite(int site, std::queue<DPNode*>& queue,
  * @brief Generate all valid extensions for a node
  */
 std::vector<Extension> Optimizer::generateExtensions(DPNode* node, int site,
-                                                 const std::vector<std::vector<Cell*>>& cells_in_rows) {
+                                                 const std::vector< std::vector<Cell*> >& cells_in_rows) {
     std::vector<Extension> extensions;
     
     // Generate all combinations of extensions for the three rows
@@ -314,7 +314,7 @@ std::vector<Extension> Optimizer::generateExtensions(DPNode* node, int site,
  * @brief Check if a staple can be inserted at a given position
  */
 bool Optimizer::canInsertStaple(int site, int row, 
-                              const std::vector<std::vector<Cell*>>& cells_in_rows,
+                              const std::vector< std::vector<Cell*> >& cells_in_rows,
                               DPNode* node) {
     // Check if the two adjacent rows have empty space at the given site
     
@@ -328,7 +328,7 @@ bool Optimizer::canInsertStaple(int site, int row,
     if (s1 < static_cast<int>(cells_in_rows[row1].size())) {
         Cell* cell1 = cells_in_rows[row1][s1];
         const CellType& type1 = cell_types[cell1->type_index];
-        int site_width = type1.getSiteWidth();
+        int site_width = type1.cellSiteWidth;
         
         if (l1 < site_width) {
             // Cell crosses the site, check if there's a pin
@@ -349,7 +349,7 @@ bool Optimizer::canInsertStaple(int site, int row,
     if (s2 < static_cast<int>(cells_in_rows[row2].size())) {
         Cell* cell2 = cells_in_rows[row2][s2];
         const CellType& type2 = cell_types[cell2->type_index];
-        int site_width = type2.getSiteWidth();
+        int site_width = type2.cellSiteWidth;
         
         if (l2 < site_width) {
             // Cell crosses the site, check if there's a pin
@@ -432,7 +432,7 @@ DPNode* Optimizer::getOrCreateNode(const CompactState& state,
 void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
                            const Extension& extension,
                            const std::vector<Staple>& prev_staples,
-                           int row_start) {
+                           int row_start, const std::vector< std::vector<Cell*> >& cells_in_rows) {
     // Try all combinations of staple insertion cases
     for (int from_case = 0; from_case < 5; from_case++) {
         // Skip invalid source cases
@@ -453,7 +453,7 @@ void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
                 
                 case R1_R2_STAPLE:
                     // Check if a staple can be inserted between R1 and R2
-                    if (canInsertStaple(site, 0, extension.row_idx == 0 ? extension : to_node)) {
+                    if (canInsertStaple(site, 0, cells_in_rows, to_node)) {
                         staple_benefit = 1;
                         if (isVDDRow(row_start)) {
                             vdd_staples = 1;
@@ -467,7 +467,7 @@ void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
                 
                 case R2_R3_STAPLE:
                     // Check if a staple can be inserted between R2 and R3
-                    if (canInsertStaple(site, 1, extension.row_idx == 1 ? extension : to_node)) {
+                    if (canInsertStaple(site, 1, cells_in_rows, to_node)) {
                         staple_benefit = 1;
                         if (isVDDRow(row_start + 1)) {
                             vdd_staples = 1;
@@ -481,8 +481,8 @@ void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
                 
                 case BOTH_STAPLES:
                     // Check if staples can be inserted in both positions
-                    if (canInsertStaple(site, 0, extension.row_idx == 0 ? extension : to_node) &&
-                        canInsertStaple(site, 1, extension.row_idx == 1 ? extension : to_node)) {
+                    if (canInsertStaple(site, 0, cells_in_rows, to_node) &&
+                        canInsertStaple(site, 1, cells_in_rows, to_node)) {
                         staple_benefit = 2;
                         if (isVDDRow(row_start)) {
                             vdd_staples++;
@@ -498,11 +498,6 @@ void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
                         continue;  // Cannot insert both staples, skip this case
                     }
                     break;
-                
-                case SPECIAL_CASE:
-                    // Special case as defined in the paper
-                    // (Implementation depends on specific requirements)
-                    continue;  // Skip for now
             }
             
             // Check for staggering violations
@@ -553,7 +548,7 @@ void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
  * @brief Backtrack through the DAG to get the optimal solution
  */
 std::vector<Staple> Optimizer::backtrack(DPNode* best_node,
-                                      const std::vector<std::vector<Cell*>>& cells_in_rows,
+                                      const std::vector< std::vector<Cell*> >& cells_in_rows,
                                       int row_start) {
     std::vector<Staple> staples;
     
@@ -610,11 +605,7 @@ std::vector<Staple> Optimizer::backtrack(DPNode* best_node,
                 staples.push_back(Staple(x, y2, is_vdd2));
                 break;
             }
-            
-            case SPECIAL_CASE:
-                // Special case staple insertion
-                // (Implementation depends on specific requirements)
-                break;
+
         }
         
         // Move to previous node
@@ -656,7 +647,7 @@ CompactState Optimizer::getCompactState(int site,
                                      int s1, int l1, bool f1,
                                      int s2, int l2, bool f2,
                                      int s3, int l3, bool f3,
-                                     const std::vector<std::vector<Cell*>>& cells_in_rows) {
+                                     const std::vector< std::vector<Cell*> >& cells_in_rows) {
     CompactState state;
     state.site = site;
     
@@ -674,7 +665,7 @@ CompactState Optimizer::getCompactState(int site,
         for (size_t i = 0; i < cells_in_rows[0].size(); i++) {
             Cell* c = cells_in_rows[0][i];
             int c_site = c->getInitialSite(chip_info.site_width);
-            if (c_site <= site && site < c_site + cell_types[c->type_index].getSiteWidth()) {
+            if (c_site <= site && site < c_site + cell_types[c->type_index].cellSiteWidth) {
                 initial_s1 = i;
                 break;
             }

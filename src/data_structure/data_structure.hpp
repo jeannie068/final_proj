@@ -54,21 +54,22 @@ struct CellType {
     int type_index;             // Cell type index
     int width;                  // Width of the cell type
     int height;                 // Height of the cell type
+    int cellSiteWidth;         // Width in site units
     std::vector<int> pin_sites; // Sites with pins (relative to cell's left boundary)
     
-    // Constructor
-    CellType(int idx, int w, int h) : type_index(idx), width(w), height(h) {}
+    // Default constructor
+    CellType() : type_index(0), width(0), height(0), cellSiteWidth(0) {}
     
-    // Get width in site units
-    int getSiteWidth() const {
-        return width / 128; // Assuming site_width is 128 as in the example
+    // Constructor
+    CellType(int idx, int w, int h, int site_width) : type_index(idx), width(w), height(h), cellSiteWidth(0) {
+        cellSiteWidth = w / site_width; // Calculate width in site units
     }
     
     // Check if a specific site has a pin
     bool hasPinAt(int site_idx, bool is_flipped) const {
         if (is_flipped) {
             // Adjust index for flipped cell
-            int flipped_idx = getSiteWidth() - 1 - site_idx;
+            int flipped_idx = cellSiteWidth - 1 - site_idx;
             for (int pin : pin_sites) {
                 if (pin == flipped_idx) return true;
             }
@@ -219,7 +220,6 @@ enum StapleCase {
     R1_R2_STAPLE = 1,   // Case 2: Staple between R1 and R2
     R2_R3_STAPLE = 2,   // Case 3: Staple between R2 and R3
     BOTH_STAPLES = 3,   // Case 4: Both staples (R1-R2 and R2-R3)
-    SPECIAL_CASE = 4    // Case 5: Special case (as in the paper)
 };
 
 /**

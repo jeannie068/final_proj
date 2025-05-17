@@ -1,5 +1,6 @@
-CC = g++
-CFLAGS = -std=c++11 -Wall -Wextra -O2
+CXX      := g++
+CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -MMD
+LIBS     := -lm
 DEBUG_FLAGS = -g -DDEBUG
 EXEC     := Staple_Insertion
 SRC_DIRS := .\
@@ -11,9 +12,9 @@ OBJS     := $(SRCS:.cpp=.o)
 DEPS     := $(OBJS:.o=.d)
 
 all: $(EXEC)
+	@mkdir -p input output
 
 $(EXEC): $(OBJS)
-	@mkdir -p ../bin
 	$(CXX) -o $@ $^ $(LIBS)
 
 %.o: %.cpp
@@ -29,7 +30,7 @@ endif
 
 test: $(EXEC)
 	@echo Testing with $(TESTCASE)
-	./$(EXEC) input/$(TESTCASE).txt output/$(TESTCASE).txt
+	./$(EXEC) ../input/$(TESTCASE).txt ../output/$(TESTCASE).txt
 
 .PHONY: all clean test
 -include $(DEPS)

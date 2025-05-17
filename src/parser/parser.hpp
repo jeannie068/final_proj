@@ -9,7 +9,7 @@
 #ifndef PARSER_HPP
 #define PARSER_HPP
 
-#include "data_structure.hpp"
+#include "../data_structure/data_structure.hpp"
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -131,7 +131,7 @@ bool Parser::parseInputFile(const std::string& filename,
         }
         
         // Create cell type with index, width, and height
-        cell_types[type_idx] = CellType(type_idx, width, height);
+        cell_types[type_idx] = CellType(type_idx, width, height, chip_info.site_width);
         
         // Read pin sites
         int pin_site;

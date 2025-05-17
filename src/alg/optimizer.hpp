@@ -11,7 +11,7 @@
 #ifndef OPTIMIZER_HPP
 #define OPTIMIZER_HPP
 
-#include "data_structure.hpp"
+#include "../data_structure/data_structure.hpp"
 #include <unordered_map>
 #include <queue>
 #include <vector>
@@ -51,7 +51,7 @@ private:
     AlgorithmParams params;
     
     // Problem state
-    std::vector<std::vector<Cell*>> cells_by_row;  // Cells organized by row
+    std::vector< std::vector<Cell*> > cells_by_row;  // Cells organized by row
     std::vector<Staple> inserted_staples;          // All inserted staples
     
     /**
@@ -72,7 +72,7 @@ private:
      * @return Source node of the DAG
      */
     DPNode* initializeDAG(int row_start, int row_end, 
-                        const std::vector<std::vector<Cell*>>& cells_in_rows);
+                        const std::vector< std::vector<Cell*> >& cells_in_rows);
     
     /**
      * @brief Process all nodes at a given site
@@ -85,7 +85,7 @@ private:
      */
     void processSite(int site, std::queue<DPNode*>& queue,
                     std::unordered_map<CompactState, DPNode*, CompactStateHasher>& node_lookup_table,
-                    const std::vector<std::vector<Cell*>>& cells_in_rows,
+                    const std::vector< std::vector<Cell*> >& cells_in_rows,
                     const std::vector<Staple>& prev_staples,
                     int row_start);
     
@@ -97,7 +97,7 @@ private:
      * @return Vector of valid extensions
      */
     std::vector<Extension> generateExtensions(DPNode* node, int site,
-                                           const std::vector<std::vector<Cell*>>& cells_in_rows);
+                                           const std::vector< std::vector<Cell*> >& cells_in_rows);
     
     /**
      * @brief Check if a staple can be inserted at a given position
@@ -108,7 +108,7 @@ private:
      * @return true if a staple can be inserted, false otherwise
      */
     bool canInsertStaple(int site, int row, 
-                        const std::vector<std::vector<Cell*>>& cells_in_rows,
+                        const std::vector< std::vector<Cell*> >& cells_in_rows,
                         DPNode* node);
     
     /**
@@ -145,9 +145,10 @@ private:
      * @param row_start Start row index
      */
     void updateBenefit(DPNode* from_node, DPNode* to_node, int site,
-                     const Extension& extension,
-                     const std::vector<Staple>& prev_staples,
-                     int row_start);
+                    const Extension& extension,
+                    const std::vector<Staple>& prev_staples,
+                    int row_start,
+                    const std::vector< std::vector<Cell*> >& cells_in_rows);
     
     /**
      * @brief Backtrack through the DAG to get the optimal solution
@@ -157,7 +158,7 @@ private:
      * @return Vector of staples to be inserted
      */
     std::vector<Staple> backtrack(DPNode* best_node,
-                                const std::vector<std::vector<Cell*>>& cells_in_rows,
+                                const std::vector< std::vector<Cell*> >& cells_in_rows,
                                 int row_start);
     
     /**
@@ -183,7 +184,7 @@ private:
                               int s1, int l1, bool f1,
                               int s2, int l2, bool f2,
                               int s3, int l3, bool f3,
-                              const std::vector<std::vector<Cell*>>& cells_in_rows);
+                              const std::vector< std::vector<Cell*> >& cells_in_rows);
     
     /**
      * @brief Determine if a position is a VDD or VSS row
