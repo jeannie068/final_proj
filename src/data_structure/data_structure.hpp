@@ -228,18 +228,18 @@ enum StapleCase {
 struct DPNode {
     CompactState state;     // Current state
     
-    // For each staple insertion case (5 cases as in the paper)
-    int benefit[5];         // Max accumulated staple benefit
-    DPNode* prev_node[5];   // Previous node pointer
-    int case_from_prev[5];  // Case in previous node
+    // For each staple insertion case (4 cases simplify than paper)
+    int benefit[4];         // Max accumulated staple benefit
+    DPNode* prev_node[4];   // Previous node pointer
+    int case_from_prev[4];  // Case in previous node
     
     // For staple balance constraint
-    int vdd_staples[5];     // VDD staple count
-    int vss_staples[5];     // VSS staple count
+    int vdd_staples[4];     // VDD staple count
+    int vss_staples[4];     // VSS staple count
     
     // Constructor
     DPNode(const CompactState& s) : state(s) {
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 4; i++) {
             benefit[i] = (i == 0) ? 0 : -1000000; // Initialize case 0 with 0, others with large negative
             prev_node[i] = nullptr;
             case_from_prev[i] = -1;

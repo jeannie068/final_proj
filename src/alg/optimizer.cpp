@@ -1,4 +1,5 @@
 #include "optimizer.hpp"
+#include "../Logger.hpp"
 
 #include <unordered_map>
 #include <queue>
@@ -16,6 +17,8 @@ Optimizer::Optimizer(const ChipInfo& chip_info,
                    const std::vector<Cell>& cells,
                    const AlgorithmParams& params)
     : chip_info(chip_info), cell_types(cell_types), cells(cells), params(params) {
+    
+    Logger::init("optimizer_log.txt");
     
     // Organize cells by row
     cells_by_row.resize(chip_info.num_rows);
@@ -41,25 +44,34 @@ Optimizer::Optimizer(const ChipInfo& chip_info,
  */
 Solution Optimizer::run() {
     auto start_time = std::chrono::high_resolution_clock::now();
+    Logger::log("Starting optimization process");
     
     // Solve the problem by processing triple-row subproblems
     std::vector<Staple> prev_staples;
+    Logger::log("Processing " + std::to_string((chip_info.num_rows + 1) / 2) + " triple-row subproblems");
     
+    // Use increaseIndent() for nested logs
+    Logger::increaseIndent();
     for (int row = 0; row < chip_info.num_rows - 2; row += 2) {
+        Logger::log("Processing triple-row subproblem for rows " + std::to_string(row) + 
+                    " to " + std::to_string(row+2));
         int row_end = std::min(row + 3, chip_info.num_rows);
         std::vector<Staple> new_staples = solveTripleRow(row, row_end, prev_staples);
         
         // Add new staples to the list
         inserted_staples.insert(inserted_staples.end(), new_staples.begin(), new_staples.end());
+        Logger::log("Subproblem completed: " + std::to_string(new_staples.size()) + " staples inserted");
         
         // Update prev_staples for the next iteration
         prev_staples = new_staples;
     }
+    Logger::decreaseIndent();
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     
     std::cout << "Optimization completed in " << duration.count() << " ms" << std::endl;
+    Logger::log("Optimization completed with " + std::to_string(inserted_staples.size()) + " staples");
     
     // Create solution object
     Solution solution;
@@ -93,6 +105,8 @@ Solution Optimizer::run() {
 std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end, 
                                            const std::vector<Staple>& prev_staples) {
     std::cout << "Solving triple-row problem for rows " << row_start << " to " << (row_end - 1) << std::endl;
+    Logger::log("Starting triple-row optimization for rows " + std::to_string(row_start) + 
+                " to " + std::to_string(row_end-1));
     
     // Extract cells for each row in the triple-row problem
     std::vector< std::vector<Cell*> > cells_in_rows;
@@ -110,6 +124,7 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
     }
     
     // Initialize the DAG
+    Logger::log("Initializing DAG for triple-row problem");
     DPNode* source_node = initializeDAG(row_start, row_end, cells_in_rows);
     
     // Create node lookup table and queue
@@ -120,12 +135,22 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
     queue.push(source_node);
     node_lookup_table[source_node->state] = source_node;
     
+    Logger::log("Processing " + std::to_string(chip_info.total_sites) + " sites");
     // Process each site from left to right
     for (int site = 0; site <= chip_info.total_sites; site++) {
         processSite(site, queue, node_lookup_table, cells_in_rows, prev_staples, row_start);
+
+        if (site % 1000 == 0) {
+            Logger::log("Processing site " + std::to_string(site) + 
+                        ", queue size: " + std::to_string(queue.size()) + 
+                        ", nodes created: " + std::to_string(node_lookup_table.size()));
+        }
         
         // Clear lookup table after processing each site to save memory
         node_lookup_table.clear();
+        Logger::log("Memory cleanup: " + std::to_string(node_lookup_table.size()) + 
+            " nodes freed at site " + std::to_string(site));
+        
     }
     
     // Find the best node at the rightmost site
@@ -135,7 +160,7 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
     for (auto it = node_lookup_table.begin(); it != node_lookup_table.end(); ++it) {
         DPNode* node = it->second;
         if (node->state.site == chip_info.total_sites) {
-            for (int case_idx = 0; case_idx < 5; case_idx++) {
+            for (int case_idx = 0; case_idx < 4; case_idx++) {
                 if (node->benefit[case_idx] > max_benefit) {
                     max_benefit = node->benefit[case_idx];
                     best_node = node;
@@ -143,6 +168,7 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
             }
         }
     }
+    Logger::log("Optimization completed, max benefit: " + std::to_string(max_benefit));
     
     // Backtrack to get the solution
     std::vector<Staple> inserted_staples;
@@ -247,66 +273,204 @@ void Optimizer::processSite(int site, std::queue<DPNode*>& queue,
 
 /**
  * @brief Generate all valid extensions for a node
+ * 
+ * This function generates all possible ways to extend a partial solution by one site.
+ * It considers all combinations of cell placements and flipping for the three rows.
  */
 std::vector<Extension> Optimizer::generateExtensions(DPNode* node, int site,
-                                                 const std::vector< std::vector<Cell*> >& cells_in_rows) {
+                                                 const std::vector<std::vector<Cell*>>& cells_in_rows) {
     std::vector<Extension> extensions;
+    Logger::log("Generating extensions at site " + std::to_string(site));
+    Logger::increaseIndent();
+    
+    // Extract current state information
+    int s1 = node->state.cell_offset[0];
+    int l1 = node->state.displacement[0];
+    bool f1 = node->state.is_flipped[0];
+    
+    int s2 = node->state.cell_offset[1];
+    int l2 = node->state.displacement[1];
+    bool f2 = node->state.is_flipped[1];
+    
+    int s3 = node->state.cell_offset[2];
+    int l3 = node->state.displacement[2];
+    bool f3 = node->state.is_flipped[2];
+    
+    // Calculate actual cell indices in each row
+    int actual_s1 = s1;
+    int actual_s2 = s2;
+    int actual_s3 = s3;
     
     // Generate all combinations of extensions for the three rows
-    // For simplicity, we'll just consider 2^3 = 8 possibilities:
-    // Each row can either stay as is or place a new cell
+    // Each row has three options:
+    // 1. No new cell, just increase distance
+    // 2. Place next cell (not flipped)
+    // 3. Place next cell (flipped)
     
-    for (int r1_ext = 0; r1_ext < 2; r1_ext++) {
-        for (int r2_ext = 0; r2_ext < 2; r2_ext++) {
-            for (int r3_ext = 0; r3_ext < 2; r3_ext++) {
-                // Create extension
-                Extension ext(site + 1, -1);
-                
-                // Process row 1
-                int s1 = node->state.cell_offset[0];
-                int l1 = node->state.displacement[0];
-                bool f1 = node->state.is_flipped[0];
-                
-                if (r1_ext == 0) {
-                    // No new cell, increase distance
-                    ext.new_cell_idx[0] = s1;
-                    ext.new_displacement[0] = l1 + 1;
-                    ext.new_is_flipped[0] = f1;
-                } else if (s1 + 1 < static_cast<int>(cells_in_rows[0].size())) {
-                    // Place next cell
-                    Cell* cell = cells_in_rows[0][s1 + 1];
-                    int initial_site = cell->getInitialSite(chip_info.site_width);
-                    int current_site = site + 1;
-                    
-                    // Check if placement is within displacement limit
-                    if (std::abs(current_site - initial_site) <= cell->max_displacement) {
-                        // Try with and without flipping
-                        for (int flip = 0; flip < 2; flip++) {
-                            bool is_flipped = (flip == 1);
-                            
-                            // Check if the placement is valid
-                            if (isValidPlacement(cell, (site + 1) * chip_info.site_width, 
-                                               cell->initial_y, is_flipped)) {
-                                Extension flipped_ext = ext;
-                                flipped_ext.new_cell_idx[0] = s1 + 1;
-                                flipped_ext.new_displacement[0] = 0;
-                                flipped_ext.new_is_flipped[0] = is_flipped;
-                                
-                                // Process the remaining rows
-                                // (similar logic for rows 2 and 3)
-                                
-                                extensions.push_back(flipped_ext);
-                            }
-                        }
-                    }
-                }
-                
-                // Similar processing for rows 2 and 3
-                // (code omitted for brevity)
+    // Helper function to create an extension with current state
+    auto createBaseExtension = [&]() {
+        Extension ext(site + 1, -1);
+        ext.new_cell_idx[0] = actual_s1;
+        ext.new_displacement[0] = l1 + 1;
+        ext.new_is_flipped[0] = f1;
+        
+        ext.new_cell_idx[1] = actual_s2;
+        ext.new_displacement[1] = l2 + 1;
+        ext.new_is_flipped[1] = f2;
+        
+        ext.new_cell_idx[2] = actual_s3;
+        ext.new_displacement[2] = l3 + 1;
+        ext.new_is_flipped[2] = f3;
+        
+        return ext;
+    };
+    
+    // Process row 1
+    std::vector<Extension> row1_exts;
+    
+    // Option 1: No new cell
+    if (cells_in_rows[0].empty() || l1 < cell_types[cells_in_rows[0][actual_s1]->type_index].cellSiteWidth) {
+        Extension ext = createBaseExtension();
+        row1_exts.push_back(ext);
+    }
+    
+    // Option 2 & 3: Place next cell (with and without flipping)
+    if (!cells_in_rows[0].empty() && actual_s1 + 1 < static_cast<int>(cells_in_rows[0].size())) {
+        Cell* next_cell = cells_in_rows[0][actual_s1 + 1];
+        int initial_site = next_cell->getInitialSite(chip_info.site_width);
+        int current_site = site + 1;
+        
+        // Check if placement is within displacement limit
+        if (std::abs(current_site - initial_site) <= next_cell->max_displacement) {
+            // Try without flipping
+            if (isValidPlacement(next_cell, current_site * chip_info.site_width, 
+                               next_cell->initial_y, false)) {
+                Extension ext = createBaseExtension();
+                ext.new_cell_idx[0] = actual_s1 + 1;
+                ext.new_displacement[0] = 0;
+                ext.new_is_flipped[0] = false;
+                row1_exts.push_back(ext);
+            }
+            
+            // Try with flipping
+            if (isValidPlacement(next_cell, current_site * chip_info.site_width, 
+                               next_cell->initial_y, true)) {
+                Extension ext = createBaseExtension();
+                ext.new_cell_idx[0] = actual_s1 + 1;
+                ext.new_displacement[0] = 0;
+                ext.new_is_flipped[0] = true;
+                row1_exts.push_back(ext);
             }
         }
     }
+    Logger::log("Row 1 extensions: " + std::to_string(row1_exts.size()));
+
+    // Process row 2
+    std::vector<Extension> row2_exts;
     
+    for (const Extension& row1_ext : row1_exts) {
+        // Option 1: No new cell
+        if (cells_in_rows[1].empty() || l2 < cell_types[cells_in_rows[1][actual_s2]->type_index].cellSiteWidth) {
+            Extension ext = row1_ext;
+            row2_exts.push_back(ext);
+        }
+        
+        // Option 2 & 3: Place next cell (with and without flipping)
+        if (!cells_in_rows[1].empty() && actual_s2 + 1 < static_cast<int>(cells_in_rows[1].size())) {
+            Cell* next_cell = cells_in_rows[1][actual_s2 + 1];
+            int initial_site = next_cell->getInitialSite(chip_info.site_width);
+            int current_site = site + 1;
+            
+            // Check if placement is within displacement limit
+            if (std::abs(current_site - initial_site) <= next_cell->max_displacement) {
+                // Try without flipping
+                if (isValidPlacement(next_cell, current_site * chip_info.site_width, 
+                                   next_cell->initial_y, false)) {
+                    Extension ext = row1_ext;
+                    ext.new_cell_idx[1] = actual_s2 + 1;
+                    ext.new_displacement[1] = 0;
+                    ext.new_is_flipped[1] = false;
+                    row2_exts.push_back(ext);
+                }
+                
+                // Try with flipping
+                if (isValidPlacement(next_cell, current_site * chip_info.site_width, 
+                                   next_cell->initial_y, true)) {
+                    Extension ext = row1_ext;
+                    ext.new_cell_idx[1] = actual_s2 + 1;
+                    ext.new_displacement[1] = 0;
+                    ext.new_is_flipped[1] = true;
+                    row2_exts.push_back(ext);
+                }
+            }
+        }
+    }
+    Logger::log("Row 2 extensions: " + std::to_string(row2_exts.size()));
+    
+    // Process row 3
+    for (const Extension& row2_ext : row2_exts) {
+        // Option 1: No new cell
+        if (cells_in_rows[2].empty() || l3 < cell_types[cells_in_rows[2][actual_s3]->type_index].cellSiteWidth) {
+            Extension ext = row2_ext;
+            extensions.push_back(ext);
+        }
+        
+        // Option 2 & 3: Place next cell (with and without flipping)
+        if (!cells_in_rows[2].empty() && actual_s3 + 1 < static_cast<int>(cells_in_rows[2].size())) {
+            Cell* next_cell = cells_in_rows[2][actual_s3 + 1];
+            int initial_site = next_cell->getInitialSite(chip_info.site_width);
+            int current_site = site + 1;
+            
+            // Check if placement is within displacement limit
+            if (std::abs(current_site - initial_site) <= next_cell->max_displacement) {
+                // Try without flipping
+                if (isValidPlacement(next_cell, current_site * chip_info.site_width, 
+                                   next_cell->initial_y, false)) {
+                    Extension ext = row2_ext;
+                    ext.new_cell_idx[2] = actual_s3 + 1;
+                    ext.new_displacement[2] = 0;
+                    ext.new_is_flipped[2] = false;
+                    extensions.push_back(ext);
+                }
+                
+                // Try with flipping
+                if (isValidPlacement(next_cell, current_site * chip_info.site_width, 
+                                   next_cell->initial_y, true)) {
+                    Extension ext = row2_ext;
+                    ext.new_cell_idx[2] = actual_s3 + 1;
+                    ext.new_displacement[2] = 0;
+                    ext.new_is_flipped[2] = true;
+                    extensions.push_back(ext);
+                }
+            }
+        }
+    }
+    Logger::log("Row 3 extensions: " + std::to_string(extensions.size()));
+    
+    // Calculate staple benefits for each extension
+    for (Extension& ext : extensions) {
+        // Calculate potential staple positions
+        bool can_insert_r1_r2 = canInsertStaple(site + 1, 0, cells_in_rows, node);
+        bool can_insert_r2_r3 = canInsertStaple(site + 1, 1, cells_in_rows, node);
+        
+        // Set staple benefits
+        if (can_insert_r1_r2 && can_insert_r2_r3) {
+            ext.staple_benefit = 2;
+            ext.vdd_count = isVDDRow(cells_in_rows[0][0]->getRowIndex(chip_info.row_height)) ? 1 : 0;
+            ext.vdd_count += isVDDRow(cells_in_rows[1][0]->getRowIndex(chip_info.row_height)) ? 1 : 0;
+            ext.vss_count = 2 - ext.vdd_count;
+        } else if (can_insert_r1_r2) {
+            ext.staple_benefit = 1;
+            ext.vdd_count = isVDDRow(cells_in_rows[0][0]->getRowIndex(chip_info.row_height)) ? 1 : 0;
+            ext.vss_count = 1 - ext.vdd_count;
+        } else if (can_insert_r2_r3) {
+            ext.staple_benefit = 1;
+            ext.vdd_count = isVDDRow(cells_in_rows[1][0]->getRowIndex(chip_info.row_height)) ? 1 : 0;
+            ext.vss_count = 1 - ext.vdd_count;
+        }
+    }
+    
+    Logger::decreaseIndent();
     return extensions;
 }
 
@@ -334,6 +498,8 @@ bool Optimizer::canInsertStaple(int site, int row,
             // Cell crosses the site, check if there's a pin
             int relative_site = site - (cell1->current_x / chip_info.site_width);
             if (type1.hasPinAt(relative_site, f1)) {
+                Logger::log("Cannot insert staple at site " + std::to_string(site) + 
+                   " row " + std::to_string(row) + ": pin collision");
                 return false;
             }
         }
@@ -355,6 +521,8 @@ bool Optimizer::canInsertStaple(int site, int row,
             // Cell crosses the site, check if there's a pin
             int relative_site = site - (cell2->current_x / chip_info.site_width);
             if (type2.hasPinAt(relative_site, f2)) {
+                Logger::log("Cannot insert staple at site " + std::to_string(site) + 
+                   " row " + std::to_string(row) + ": pin collision");
                 return false;
             }
         }
@@ -428,19 +596,46 @@ DPNode* Optimizer::getOrCreateNode(const CompactState& state,
 
 /**
  * @brief Update benefit of a node based on an extension
+ * 
+ * This function updates the benefit of a node based on an extension, checking all
+ * staple insertion cases and constraints.
  */
 void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
                            const Extension& extension,
                            const std::vector<Staple>& prev_staples,
-                           int row_start, const std::vector< std::vector<Cell*> >& cells_in_rows) {
+                           int row_start,
+                           const std::vector<std::vector<Cell*>>& cells_in_rows) {
+    
+    Logger::log("Updating benefit for site " + std::to_string(site));
+    Logger::increaseIndent();
     // Try all combinations of staple insertion cases
-    for (int from_case = 0; from_case < 5; from_case++) {
+    for (int from_case = 0; from_case < 4; from_case++) {
         // Skip invalid source cases
-        if (from_node->benefit[from_case] < 0) {
+        if (from_node->benefit[from_case] < -900000) {
             continue;
         }
         
-        for (int to_case = 0; to_case < 5; to_case++) {
+        // Determine valid target cases based on potential staple insertions
+        std::vector<int> valid_target_cases;
+        valid_target_cases.push_back(NO_STAPLE); // Always consider no staple case
+        
+        bool can_insert_r1_r2 = canInsertStaple(site + 1, 0, cells_in_rows, to_node);
+        bool can_insert_r2_r3 = canInsertStaple(site + 1, 1, cells_in_rows, to_node);
+        
+        if (can_insert_r1_r2) {
+            valid_target_cases.push_back(R1_R2_STAPLE);
+        }
+        
+        if (can_insert_r2_r3) {
+            valid_target_cases.push_back(R2_R3_STAPLE);
+        }
+        
+        if (can_insert_r1_r2 && can_insert_r2_r3) {
+            valid_target_cases.push_back(BOTH_STAPLES);
+        }
+        
+        // Process each valid target case
+        for (int to_case : valid_target_cases) {
             // Calculate staple benefits based on the case
             int staple_benefit = 0;
             int vdd_staples = 0;
@@ -449,59 +644,73 @@ void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
             switch (to_case) {
                 case NO_STAPLE:
                     // No staples inserted
+                    // Check if we should apply balance factor for reserving space
+                    if (site + 1 < chip_info.total_sites) {
+                        // Calculate a heuristic benefit for leaving space
+                        // This would encourage balanced staple insertion
+                        double current_vdd = from_node->vdd_staples[from_case];
+                        double current_vss = from_node->vss_staples[from_case];
+                        
+                        // Only apply if there's significant imbalance
+                        if (current_vdd > 0 && current_vss > 0) {
+                            double ratio = std::max(current_vdd, current_vss) / 
+                                         std::min(current_vdd, current_vss);
+                            
+                            if (ratio > 1.05) {
+                                // Apply balance factor
+                                staple_benefit = 0;
+                                
+                                // Add a tiny bonus to encourage reservation for the less frequent staple type
+                                if ((current_vdd > current_vss && can_insert_r1_r2 && !isVDDRow(row_start)) ||
+                                    (current_vdd > current_vss && can_insert_r2_r3 && !isVDDRow(row_start + 1)) ||
+                                    (current_vss > current_vdd && can_insert_r1_r2 && isVDDRow(row_start)) ||
+                                    (current_vss > current_vdd && can_insert_r2_r3 && isVDDRow(row_start + 1))) {
+                                    staple_benefit = params.balance_factor;
+                                }
+                            }
+                        }
+                    }
                     break;
                 
                 case R1_R2_STAPLE:
-                    // Check if a staple can be inserted between R1 and R2
-                    if (canInsertStaple(site, 0, cells_in_rows, to_node)) {
-                        staple_benefit = 1;
-                        if (isVDDRow(row_start)) {
-                            vdd_staples = 1;
-                        } else {
-                            vss_staples = 1;
-                        }
+                    // Insert staple between R1 and R2
+                    staple_benefit = 1;
+                    if (isVDDRow(row_start)) {
+                        vdd_staples = 1;
                     } else {
-                        continue;  // Cannot insert staple, skip this case
+                        vss_staples = 1;
                     }
                     break;
                 
                 case R2_R3_STAPLE:
-                    // Check if a staple can be inserted between R2 and R3
-                    if (canInsertStaple(site, 1, cells_in_rows, to_node)) {
-                        staple_benefit = 1;
-                        if (isVDDRow(row_start + 1)) {
-                            vdd_staples = 1;
-                        } else {
-                            vss_staples = 1;
-                        }
+                    // Insert staple between R2 and R3
+                    staple_benefit = 1;
+                    if (isVDDRow(row_start + 1)) {
+                        vdd_staples = 1;
                     } else {
-                        continue;  // Cannot insert staple, skip this case
+                        vss_staples = 1;
                     }
                     break;
                 
                 case BOTH_STAPLES:
-                    // Check if staples can be inserted in both positions
-                    if (canInsertStaple(site, 0, cells_in_rows, to_node) &&
-                        canInsertStaple(site, 1, cells_in_rows, to_node)) {
-                        staple_benefit = 2;
-                        if (isVDDRow(row_start)) {
-                            vdd_staples++;
-                        } else {
-                            vss_staples++;
-                        }
-                        if (isVDDRow(row_start + 1)) {
-                            vdd_staples++;
-                        } else {
-                            vss_staples++;
-                        }
+                    // Insert staples between R1-R2 and R2-R3
+                    staple_benefit = 2;
+                    if (isVDDRow(row_start)) {
+                        vdd_staples++;
                     } else {
-                        continue;  // Cannot insert both staples, skip this case
+                        vss_staples++;
+                    }
+                    if (isVDDRow(row_start + 1)) {
+                        vdd_staples++;
+                    } else {
+                        vss_staples++;
                     }
                     break;
+                
             }
             
             // Check for staggering violations
-            if (hasStaggeringViolation(site, to_case, from_case, prev_staples, row_start)) {
+            if (to_case != NO_STAPLE && hasStaggeringViolation(site + 1, to_case, from_case, prev_staples, row_start)) {
                 continue;  // Staggering violation, skip this case
             }
             
@@ -510,24 +719,33 @@ void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
             int new_vdd = from_node->vdd_staples[from_case] + vdd_staples;
             int new_vss = from_node->vss_staples[from_case] + vss_staples;
             
-            // Check balance constraint
+            // Apply dynamic staple balance adjustment
             if (new_vdd > 0 && new_vss > 0) {
                 double ratio = static_cast<double>(std::max(new_vdd, new_vss)) / 
                               std::min(new_vdd, new_vss);
                 
-                if (ratio > 1.1) {
-                    // Apply balance encouragement
-                    if (new_vdd > new_vss && to_case == R1_R2_STAPLE && !isVDDRow(row_start)) {
-                        new_benefit += params.balance_factor;
+                // Apply stronger balance encouragement as ratio approaches the limit
+                if (ratio > 1.05) {
+                    // Apply balance encouragement with dynamic weight
+                    double balance_weight = params.balance_factor * (1.0 + (ratio - 1.05) * 2.0);
+                    
+                    if (new_vdd > new_vss) {
+                        // Encourage VSS staples
+                        if (to_case == R1_R2_STAPLE && !isVDDRow(row_start)) {
+                            new_benefit += balance_weight;
+                        }
+                        else if (to_case == R2_R3_STAPLE && !isVDDRow(row_start + 1)) {
+                            new_benefit += balance_weight;
+                        }
                     }
-                    else if (new_vdd > new_vss && to_case == R2_R3_STAPLE && !isVDDRow(row_start + 1)) {
-                        new_benefit += params.balance_factor;
-                    }
-                    else if (new_vss > new_vdd && to_case == R1_R2_STAPLE && isVDDRow(row_start)) {
-                        new_benefit += params.balance_factor;
-                    }
-                    else if (new_vss > new_vdd && to_case == R2_R3_STAPLE && isVDDRow(row_start + 1)) {
-                        new_benefit += params.balance_factor;
+                    else if (new_vss > new_vdd) {
+                        // Encourage VDD staples
+                        if (to_case == R1_R2_STAPLE && isVDDRow(row_start)) {
+                            new_benefit += balance_weight;
+                        }
+                        else if (to_case == R2_R3_STAPLE && isVDDRow(row_start + 1)) {
+                            new_benefit += balance_weight;
+                        }
                     }
                 }
             }
@@ -535,10 +753,21 @@ void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
             // Update benefit if better
             if (new_benefit > to_node->benefit[to_case]) {
                 to_node->benefit[to_case] = new_benefit;
+                Logger::log("Benefit improved: case " + std::to_string(to_case) + 
+                    " from " + std::to_string(to_node->benefit[to_case]) + 
+                    " to " + std::to_string(new_benefit) + 
+                    " (VDD: " + std::to_string(new_vdd) + 
+                    ", VSS: " + std::to_string(new_vss) + ")");
                 to_node->prev_node[to_case] = from_node;
                 to_node->case_from_prev[to_case] = from_case;
                 to_node->vdd_staples[to_case] = new_vdd;
                 to_node->vss_staples[to_case] = new_vss;
+            }
+            Logger::decreaseIndent();
+            // For constraint violations
+            if (hasStaggeringViolation(site + 1, to_case, from_case, prev_staples, row_start)) {
+                Logger::log("Staggering violation detected at site " + std::to_string(site) + 
+                            " for case " + std::to_string(to_case));
             }
         }
     }
@@ -546,9 +775,12 @@ void Optimizer::updateBenefit(DPNode* from_node, DPNode* to_node, int site,
 
 /**
  * @brief Backtrack through the DAG to get the optimal solution
+ * 
+ * This function traces back through the DAG to reconstruct the optimal solution,
+ * including both staple insertion and cell placement.
  */
 std::vector<Staple> Optimizer::backtrack(DPNode* best_node,
-                                      const std::vector< std::vector<Cell*> >& cells_in_rows,
+                                      const std::vector<std::vector<Cell*>>& cells_in_rows,
                                       int row_start) {
     std::vector<Staple> staples;
     
@@ -556,21 +788,29 @@ std::vector<Staple> Optimizer::backtrack(DPNode* best_node,
     int best_case = 0;
     int max_benefit = best_node->benefit[0];
     
-    for (int i = 1; i < 5; i++) {
+    for (int i = 1; i < 4; i++) {
         if (best_node->benefit[i] > max_benefit) {
             max_benefit = best_node->benefit[i];
             best_case = i;
         }
     }
     
+    // Prepare to backtrack to update cell positions
+    std::vector<std::pair<Cell*, std::pair<int, bool>>> cell_updates; // <cell, <new_x, flipped>>
+    
     // Backtrack from best node
     DPNode* current = best_node;
     int current_case = best_case;
     int site = chip_info.total_sites;
+
+    Logger::log("Starting backtracking from site " + std::to_string(site) + 
+                " with best case " + std::to_string(best_case) + 
+                " (benefit: " + std::to_string(max_benefit) + ")");
     
     while (current != nullptr && current->prev_node[current_case] != nullptr) {
-        int prev_case = current->case_from_prev[current_case];
+        // Get previous node and case
         DPNode* prev_node = current->prev_node[current_case];
+        int prev_case = current->case_from_prev[current_case];
         
         // Insert staples based on the case
         switch (current_case) {
@@ -606,6 +846,31 @@ std::vector<Staple> Optimizer::backtrack(DPNode* best_node,
                 break;
             }
 
+            case NO_STAPLE:
+                // No staple inserted, do nothing
+                break;
+        }
+        
+        // Update cell positions based on state change
+        for (int row = 0; row < 3; row++) {
+            // Check if cell assignment changed
+            int prev_offset = prev_node->state.cell_offset[row];
+            int curr_offset = current->state.cell_offset[row];
+            bool prev_flipped = prev_node->state.is_flipped[row];
+            bool curr_flipped = current->state.is_flipped[row];
+            
+            if (prev_offset != curr_offset || prev_flipped != curr_flipped) {
+                // Cell assignment changed, need to update
+                if (curr_offset >= 0 && curr_offset < static_cast<int>(cells_in_rows[row].size())) {
+                    Cell* cell = cells_in_rows[row][curr_offset];
+                    int new_x = site * chip_info.site_width;
+                    
+                    // Record cell update
+                    cell_updates.push_back(std::make_pair(cell, std::make_pair(new_x, curr_flipped)));
+                }
+            }
+            Logger::log("Inserting staple at site " + std::to_string(site) + 
+                " between rows " + std::to_string(row) + " and " + std::to_string(row+1));
         }
         
         // Move to previous node
@@ -614,9 +879,21 @@ std::vector<Staple> Optimizer::backtrack(DPNode* best_node,
         current_case = prev_case;
     }
     
-    // Update cell positions based on the final state
-    // (This would need to be implemented based on the backtracking path)
+    // Apply cell position updates
+    for (const auto& update : cell_updates) {
+        Cell* cell = update.first;
+        int new_x = update.second.first;
+        bool flipped = update.second.second;
+        
+        // Update cell position
+        cell->current_x = new_x;
+        cell->is_flipped = flipped;
+    }
     
+    // Reverse staples vector since we added them in reverse order
+    std::reverse(staples.begin(), staples.end());
+    
+    Logger::log("Backtracking completed: " + std::to_string(staples.size()) + " staples inserted");
     return staples;
 }
 
@@ -642,12 +919,15 @@ bool Optimizer::isValidPlacement(const Cell* cell, int x, int y, bool is_flipped
 
 /**
  * @brief Get the compact state encoding for a configuration
+ * 
+ * This function converts a regular state representation to a compact state encoding
+ * for memory efficiency.
  */
 CompactState Optimizer::getCompactState(int site, 
                                      int s1, int l1, bool f1,
                                      int s2, int l2, bool f2,
                                      int s3, int l3, bool f3,
-                                     const std::vector< std::vector<Cell*> >& cells_in_rows) {
+                                     const std::vector<std::vector<Cell*>>& cells_in_rows) {
     CompactState state;
     state.site = site;
     
@@ -657,31 +937,89 @@ CompactState Optimizer::getCompactState(int site,
         state.displacement[0] = 0;
         state.is_flipped[0] = false;
     } else {
-        Cell* cell1 = cells_in_rows[0][s1];
-        int initial_site1 = cell1->getInitialSite(chip_info.site_width);
-        int initial_s1 = -1;
-        
-        // Find the cell that would be here in the initial placement
+        // Find the cell index of the cell that would be at this site in the initial placement
+        int initial_s1 = 0;
         for (size_t i = 0; i < cells_in_rows[0].size(); i++) {
-            Cell* c = cells_in_rows[0][i];
-            int c_site = c->getInitialSite(chip_info.site_width);
-            if (c_site <= site && site < c_site + cell_types[c->type_index].cellSiteWidth) {
+            Cell* cell = cells_in_rows[0][i];
+            int cell_start_site = cell->initial_x / chip_info.site_width;
+            int cell_end_site = cell_start_site + cell_types[cell->type_index].cellSiteWidth;
+            
+            if (cell_start_site <= site && site < cell_end_site) {
                 initial_s1 = i;
+                break;
+            }
+            
+            if (cell_start_site > site) {
+                if (i > 0) initial_s1 = i - 1;
                 break;
             }
         }
         
-        if (initial_s1 == -1) {
-            initial_s1 = cells_in_rows[0].size() - 1;
-        }
-        
+        // Calculate cell offset
         state.cell_offset[0] = s1 - initial_s1;
         state.displacement[0] = l1;
         state.is_flipped[0] = f1;
     }
     
-    // Similar calculations for rows 2 and 3
-    // (code omitted for brevity)
+    // Calculate compact encoding for row 2
+    if (cells_in_rows[1].empty()) {
+        state.cell_offset[1] = 0;
+        state.displacement[1] = 0;
+        state.is_flipped[1] = false;
+    } else {
+        // Find the cell index of the cell that would be at this site in the initial placement
+        int initial_s2 = 0;
+        for (size_t i = 0; i < cells_in_rows[1].size(); i++) {
+            Cell* cell = cells_in_rows[1][i];
+            int cell_start_site = cell->initial_x / chip_info.site_width;
+            int cell_end_site = cell_start_site + cell_types[cell->type_index].cellSiteWidth;
+            
+            if (cell_start_site <= site && site < cell_end_site) {
+                initial_s2 = i;
+                break;
+            }
+            
+            if (cell_start_site > site) {
+                if (i > 0) initial_s2 = i - 1;
+                break;
+            }
+        }
+        
+        // Calculate cell offset
+        state.cell_offset[1] = s2 - initial_s2;
+        state.displacement[1] = l2;
+        state.is_flipped[1] = f2;
+    }
+    
+    // Calculate compact encoding for row 3
+    if (cells_in_rows[2].empty()) {
+        state.cell_offset[2] = 0;
+        state.displacement[2] = 0;
+        state.is_flipped[2] = false;
+    } else {
+        // Find the cell index of the cell that would be at this site in the initial placement
+        int initial_s3 = 0;
+        for (size_t i = 0; i < cells_in_rows[2].size(); i++) {
+            Cell* cell = cells_in_rows[2][i];
+            int cell_start_site = cell->initial_x / chip_info.site_width;
+            int cell_end_site = cell_start_site + cell_types[cell->type_index].cellSiteWidth;
+            
+            if (cell_start_site <= site && site < cell_end_site) {
+                initial_s3 = i;
+                break;
+            }
+            
+            if (cell_start_site > site) {
+                if (i > 0) initial_s3 = i - 1;
+                break;
+            }
+        }
+        
+        // Calculate cell offset
+        state.cell_offset[2] = s3 - initial_s3;
+        state.displacement[2] = l3;
+        state.is_flipped[2] = f3;
+    }
     
     return state;
 }
