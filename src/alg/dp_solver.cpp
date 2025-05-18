@@ -14,7 +14,12 @@ DPSolver::DPSolver(const ChipInfo& chip_info,
                  const AlgorithmParams& params)
     : chip_info(chip_info), cell_types(cell_types), params(params) {
     
-    Logger::log("DPSolver initialized");
+    Logger::log("DPSolver initialized with parameters:");
+    Logger::log("  Balance factor: " + std::to_string(params.balance_factor));
+    Logger::log("  Total sites: " + std::to_string(chip_info.total_sites));
+    Logger::log("  Site width: " + std::to_string(chip_info.site_width));
+    Logger::log("  Row height: " + std::to_string(chip_info.row_height));
+    Logger::log("  Cell types: " + std::to_string(cell_types.size()));
     
     // Initialize statistics
     max_nodes_count = 0;
@@ -45,12 +50,21 @@ std::vector<Staple> DPSolver::solveTripleRow(
     
     auto start_time = std::chrono::high_resolution_clock::now();
     
+    Logger::log("====================================================");
     Logger::log("Starting triple-row optimization for rows " + 
                 std::to_string(row_start) + " to " + 
                 std::to_string(row_start + 2));
+    Logger::log("Cells in row " + std::to_string(row_start) + ": " + 
+                std::to_string(cells_in_rows[0].size()));
+    Logger::log("Cells in row " + std::to_string(row_start + 1) + ": " + 
+                std::to_string(cells_in_rows[1].size()));
+    Logger::log("Cells in row " + std::to_string(row_start + 2) + ": " + 
+                std::to_string(cells_in_rows[2].size()));
+    Logger::log("Previous staples: " + std::to_string(prev_staples.size()));
     
     // Initialize the DAG
     DPNode* source_node = initializeDAG();
+    Logger::log("DAG initialized with source node");
     
     // Clear data structures for a fresh run
     best_node = nullptr;
@@ -67,6 +81,8 @@ std::vector<Staple> DPSolver::solveTripleRow(
     all_nodes.push_back(source_node);
     nodes_created = 1;
     
+    Logger::log("Beginning site-by-site processing, total sites: " + 
+                std::to_string(chip_info.total_sites));
     // Process each site from left to right
     for (int site = 0; site <= chip_info.total_sites; site++) {
         processSite(site, cells_in_rows, prev_staples, row_start);
@@ -77,10 +93,12 @@ std::vector<Staple> DPSolver::solveTripleRow(
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 current_time - start_time);
             
-            Logger::log("Site " + std::to_string(site) + 
+            Logger::log("Site " + std::to_string(site) + "/" + 
+                        std::to_string(chip_info.total_sites) + 
                         " processed in " + std::to_string(duration.count()) + " ms, " +
                         "queue size: " + std::to_string(node_queue.size()) + 
-                        ", nodes: " + std::to_string(node_lookup_table.size()));
+                        ", nodes: " + std::to_string(node_lookup_table.size()) +
+                        ", total created: " + std::to_string(nodes_created));
             
             // Monitor memory usage
             monitorMemoryUsage();
@@ -89,7 +107,10 @@ std::vector<Staple> DPSolver::solveTripleRow(
         // Clear lookup table after processing each site to save memory
         // But keep the nodes at current site
         if (site < chip_info.total_sites) {
+            size_t before_size = node_lookup_table.size();
             node_lookup_table.clear();
+            Logger::log("Lookup table cleared: " + std::to_string(before_size) + 
+                        " entries removed");
         }
     }
     
@@ -97,25 +118,46 @@ std::vector<Staple> DPSolver::solveTripleRow(
     std::vector<Staple> inserted_staples;
     if (best_node != nullptr) {
         Logger::log("Best solution found with benefit: " + std::to_string(max_benefit));
+        Logger::log("VDD staples: " + std::to_string(best_node->vdd_staples[0]) +
+                    ", VSS staples: " + std::to_string(best_node->vss_staples[0]));
+        Logger::log("Starting backtracking to recover solution");
         inserted_staples = backtrack(cells_in_rows, row_start);
     } else {
-        Logger::log("No valid solution found");
+        Logger::log("WARNING: No valid solution found!");
     }
     
     // Apply cell placement updates
     applyPlacementUpdates(cells_in_rows);
+    Logger::log("Cell placement updates applied");
     
     // Final stats
     auto end_time = std::chrono::high_resolution_clock::now();
     auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 end_time - start_time);
     
+    double vdd_vss_ratio = 0.0;
+    int vdd_count = 0, vss_count = 0;
+    for (const auto& staple : inserted_staples) {
+        if (staple.is_vdd) vdd_count++;
+        else vss_count++;
+    }
+    
+    if (vdd_count > 0 && vss_count > 0) {
+        vdd_vss_ratio = static_cast<double>(std::max(vdd_count, vss_count)) / 
+                        std::min(vdd_count, vss_count);
+    }
+    
+    Logger::log("====================================================");
     Logger::log("Triple-row optimization completed in " + 
                 std::to_string(total_duration.count()) + " ms");
     Logger::log("Staples inserted: " + std::to_string(inserted_staples.size()));
-    Logger::log("Nodes created: " + std::to_string(nodes_created));
-    Logger::log("Nodes processed: " + std::to_string(nodes_processed));
+    Logger::log("VDD staples: " + std::to_string(vdd_count) + 
+                ", VSS staples: " + std::to_string(vss_count) + 
+                ", Ratio: " + std::to_string(vdd_vss_ratio));
+    Logger::log("Nodes created: " + std::to_string(nodes_created) +
+                ", Nodes processed: " + std::to_string(nodes_processed));
     Logger::log("Max nodes in memory: " + std::to_string(max_nodes_count));
+    Logger::log("====================================================");
     
     // Clean up memory
     cleanup();
@@ -139,6 +181,7 @@ DPNode* DPSolver::initializeDAG() {
     
     // Create source node
     DPNode* source_node = new DPNode(initial_state);
+    Logger::log("  Created source node at site 0");
     
     // Initialize benefit values (only NO_STAPLE case is valid initially)
     for (int i = 0; i < 4; i++) {
@@ -161,6 +204,10 @@ void DPSolver::processSite(int site,
     size_t nodes_to_process = node_queue.size();
     Logger::log("Processing site " + std::to_string(site) + 
                 ", nodes to process: " + std::to_string(nodes_to_process));
+    Logger::increaseIndent();
+    
+    size_t extensions_count = 0;
+    size_t valid_extensions = 0;
     
     for (size_t i = 0; i < nodes_to_process; i++) {
         DPNode* node = node_queue.front();
@@ -169,11 +216,22 @@ void DPSolver::processSite(int site,
         
         // Skip if node is not at the current site
         if (node->state.site != site) {
+            Logger::log("Node skipped, not at current site. Node site: " + 
+                      std::to_string(node->state.site) + ", Current site: " + 
+                      std::to_string(site));
             continue;
         }
         
         // Generate all valid extensions
         std::vector<Extension> extensions = generateExtensions(node, site, cells_in_rows, row_start);
+        extensions_count += extensions.size();
+        
+        // Log every 1000th node for visibility
+        if (nodes_processed % 1000 == 0 || nodes_to_process < 10) {
+            Logger::log("Node " + std::to_string(nodes_processed) + 
+                        ": Generated " + std::to_string(extensions.size()) + 
+                        " extensions");
+        }
         
         // Process each extension
         for (const Extension& ext : extensions) {
@@ -203,6 +261,7 @@ void DPSolver::processSite(int site,
             
             // Update benefit
             updateBenefit(node, target_node, site, ext, prev_staples, row_start, cells_in_rows);
+            valid_extensions++;
             
             // Update best node if this is the last site
             if (site + 1 == chip_info.total_sites) {
@@ -210,10 +269,20 @@ void DPSolver::processSite(int site,
                     if (target_node->benefit[case_idx] > max_benefit) {
                         max_benefit = target_node->benefit[case_idx];
                         best_node = target_node;
+                        Logger::log("New best node found at final site: benefit = " + 
+                                  std::to_string(max_benefit) + ", case = " + 
+                                  std::to_string(case_idx));
                     }
                 }
             }
         }
+    }
+    
+    Logger::decreaseIndent();
+    if (extensions_count > 0) {
+        Logger::log("Site " + std::to_string(site) + " complete: " + 
+                    std::to_string(extensions_count) + " total extensions, " + 
+                    std::to_string(valid_extensions) + " valid extensions");
     }
     
     // Update max nodes count stat
@@ -230,6 +299,8 @@ std::vector<Extension> DPSolver::generateExtensions(
     int row_start) {
     
     std::vector<Extension> extensions;
+    Logger::increaseIndent();
+    Logger::log("Generating extensions at site " + std::to_string(site));
     
     // Extract current state information
     int s1 = node->state.cell_offset[0];
@@ -243,6 +314,16 @@ std::vector<Extension> DPSolver::generateExtensions(
     int s3 = node->state.cell_offset[2];
     int l3 = node->state.displacement[2];
     bool f3 = node->state.is_flipped[2];
+    
+    Logger::log("Current state: s1=" + std::to_string(s1) + 
+                ", l1=" + std::to_string(l1) + 
+                ", f1=" + std::to_string(f1) + 
+                ", s2=" + std::to_string(s2) + 
+                ", l2=" + std::to_string(l2) + 
+                ", f2=" + std::to_string(f2) + 
+                ", s3=" + std::to_string(s3) + 
+                ", l3=" + std::to_string(l3) + 
+                ", f3=" + std::to_string(f3));
     
     // Helper function to create a base extension with current state
     auto createBaseExtension = [&]() {
@@ -271,6 +352,7 @@ std::vector<Extension> DPSolver::generateExtensions(
         l1 < cell_types[cells_in_rows[0][s1]->type_index].cellSiteWidth) {
         Extension ext = createBaseExtension();
         row1_exts.push_back(ext);
+        Logger::log("Row 1: Adding extension with no new cell");
     }
     
     // Option 2 & 3: Place next cell (with and without flipping)
@@ -278,6 +360,11 @@ std::vector<Extension> DPSolver::generateExtensions(
         Cell* next_cell = cells_in_rows[0][s1 + 1];
         int initial_site = next_cell->getInitialSite(chip_info.site_width);
         int current_site = site + 1;
+        
+        Logger::log("Row 1: Considering cell " + std::to_string(next_cell->cell_index) + 
+                    " at site " + std::to_string(current_site) + 
+                    " (initial site: " + std::to_string(initial_site) + 
+                    ", max displacement: " + std::to_string(next_cell->max_displacement) + ")");
         
         // Check if placement is within displacement limit
         if (std::abs(current_site - initial_site) <= next_cell->max_displacement) {
@@ -289,6 +376,9 @@ std::vector<Extension> DPSolver::generateExtensions(
                 ext.new_displacement[0] = 0;
                 ext.new_is_flipped[0] = false;
                 row1_exts.push_back(ext);
+                Logger::log("Row 1: Adding extension with new cell (not flipped)");
+            } else {
+                Logger::log("Row 1: Invalid placement for new cell (not flipped)");
             }
             
             // Try with flipping
@@ -299,9 +389,16 @@ std::vector<Extension> DPSolver::generateExtensions(
                 ext.new_displacement[0] = 0;
                 ext.new_is_flipped[0] = true;
                 row1_exts.push_back(ext);
+                Logger::log("Row 1: Adding extension with new cell (flipped)");
+            } else {
+                Logger::log("Row 1: Invalid placement for new cell (flipped)");
             }
+        } else {
+            Logger::log("Row 1: Cell exceeds displacement limit");
         }
     }
+    
+    Logger::log("Row 1 extensions: " + std::to_string(row1_exts.size()));
     
     // Process row 2
     std::vector<Extension> row2_exts;
@@ -313,6 +410,7 @@ std::vector<Extension> DPSolver::generateExtensions(
             l2 < cell_types[cells_in_rows[1][s2]->type_index].cellSiteWidth) {
             Extension ext = row1_ext;
             row2_exts.push_back(ext);
+            // Don't log every extension to avoid excessive logs
         }
         
         // Option 2 & 3: Place next cell (with and without flipping)
@@ -320,6 +418,12 @@ std::vector<Extension> DPSolver::generateExtensions(
             Cell* next_cell = cells_in_rows[1][s2 + 1];
             int initial_site = next_cell->getInitialSite(chip_info.site_width);
             int current_site = site + 1;
+            
+            // Only log if this is the first extension from row 1
+            if (row2_exts.empty()) {
+                Logger::log("Row 2: Considering cell " + std::to_string(next_cell->cell_index) + 
+                            " at site " + std::to_string(current_site));
+            }
             
             // Check if placement is within displacement limit
             if (std::abs(current_site - initial_site) <= next_cell->max_displacement) {
@@ -346,6 +450,8 @@ std::vector<Extension> DPSolver::generateExtensions(
         }
     }
     
+    Logger::log("Row 2 extensions: " + std::to_string(row2_exts.size()));
+    
     // Process row 3
     for (const Extension& row2_ext : row2_exts) {
         // Option 1: No new cell
@@ -361,6 +467,12 @@ std::vector<Extension> DPSolver::generateExtensions(
             Cell* next_cell = cells_in_rows[2][s3 + 1];
             int initial_site = next_cell->getInitialSite(chip_info.site_width);
             int current_site = site + 1;
+            
+            // Only log if this is the first extension
+            if (extensions.empty()) {
+                Logger::log("Row 3: Considering cell " + std::to_string(next_cell->cell_index) + 
+                            " at site " + std::to_string(current_site));
+            }
             
             // Check if placement is within displacement limit
             if (std::abs(current_site - initial_site) <= next_cell->max_displacement) {
@@ -387,11 +499,17 @@ std::vector<Extension> DPSolver::generateExtensions(
         }
     }
     
+    Logger::log("Row 3 extensions: " + std::to_string(extensions.size()));
+    
     // Calculate staple benefits for each extension
+    int staple_possibilities = 0;
     for (Extension& ext : extensions) {
         // Calculate potential staple positions
         bool can_insert_r1_r2 = canInsertStaple(site + 1, 0, cells_in_rows, node);
         bool can_insert_r2_r3 = canInsertStaple(site + 1, 1, cells_in_rows, node);
+        
+        if (can_insert_r1_r2) staple_possibilities++;
+        if (can_insert_r2_r3) staple_possibilities++;
         
         // Set staple benefits
         if (can_insert_r1_r2 && can_insert_r2_r3) {
@@ -410,6 +528,11 @@ std::vector<Extension> DPSolver::generateExtensions(
         }
     }
     
+    Logger::log("Staple possibilities: " + std::to_string(staple_possibilities) + 
+                " (R1-R2: " + (canInsertStaple(site + 1, 0, cells_in_rows, node) ? "Yes" : "No") + 
+                ", R2-R3: " + (canInsertStaple(site + 1, 1, cells_in_rows, node) ? "Yes" : "No") + ")");
+    Logger::decreaseIndent();
+    
     return extensions;
 }
 
@@ -421,10 +544,13 @@ bool DPSolver::canInsertStaple(int site,
                              const std::vector<std::vector<Cell*>>& cells_in_rows,
                              DPNode* node) {
     // Check if the two adjacent rows have empty space at the given site
+    Logger::increaseIndent();
     
     // First row to check
     int row1 = row;
     if (row1 >= static_cast<int>(cells_in_rows.size())) {
+        Logger::log("Cannot insert staple: Invalid row1 index " + std::to_string(row1));
+        Logger::decreaseIndent();
         return false;
     }
     
@@ -443,6 +569,9 @@ bool DPSolver::canInsertStaple(int site,
             // Cell crosses the site, check if there's a pin
             int relative_site = site - (cell1->initial_x / chip_info.site_width + l1);
             if (type1.hasPinAt(relative_site, f1)) {
+                Logger::log("Cannot insert staple at site " + std::to_string(site) + 
+                          ", row " + std::to_string(row) + ": pin collision in row1");
+                Logger::decreaseIndent();
                 return false;
             }
         }
@@ -451,6 +580,8 @@ bool DPSolver::canInsertStaple(int site,
     // Second row to check
     int row2 = row + 1;
     if (row2 >= static_cast<int>(cells_in_rows.size())) {
+        Logger::log("Cannot insert staple: Invalid row2 index " + std::to_string(row2));
+        Logger::decreaseIndent();
         return false;
     }
     
@@ -469,11 +600,16 @@ bool DPSolver::canInsertStaple(int site,
             // Cell crosses the site, check if there's a pin
             int relative_site = site - (cell2->initial_x / chip_info.site_width + l2);
             if (type2.hasPinAt(relative_site, f2)) {
+                Logger::log("Cannot insert staple at site " + std::to_string(site) + 
+                          ", row " + std::to_string(row) + ": pin collision in row2");
+                Logger::decreaseIndent();
                 return false;
             }
         }
     }
     
+    // If we reach here, there's no obstruction
+    Logger::decreaseIndent();
     return true;
 }
 
@@ -488,6 +624,7 @@ bool DPSolver::hasStaggeringViolation(int site,
     // Check for staggering between current staples
     if ((staple_case == R1_R2_STAPLE && prev_case == R2_R3_STAPLE) ||
         (staple_case == R2_R3_STAPLE && prev_case == R1_R2_STAPLE)) {
+        Logger::log("Staggering violation: Between R1-R2 and R2-R3 staples");
         return true;  // Staggering between R1-R2 and R2-R3
     }
     
@@ -502,6 +639,8 @@ bool DPSolver::hasStaggeringViolation(int site,
             
             if ((staple_case == R1_R2_STAPLE && prev_row == row_start - 1) ||
                 (staple_case == R2_R3_STAPLE && prev_row == row_start + 3)) {
+                Logger::log("Staggering violation: With previous staple at site " + 
+                          std::to_string(site) + ", row " + std::to_string(prev_row));
                 return true;
             }
         }
@@ -511,6 +650,8 @@ bool DPSolver::hasStaggeringViolation(int site,
             
             if ((staple_case == R1_R2_STAPLE && prev_row == row_start + 3) ||
                 (staple_case == R2_R3_STAPLE && prev_row == row_start - 1)) {
+                Logger::log("Staggering violation: With previous staple at site " + 
+                          std::to_string(site + 1) + ", row " + std::to_string(prev_row));
                 return true;
             }
         }
@@ -525,11 +666,25 @@ bool DPSolver::hasStaggeringViolation(int site,
 DPNode* DPSolver::getOrCreateNode(const CompactState& state) {
     auto it = node_lookup_table.find(state);
     if (it != node_lookup_table.end()) {
+        // Log only occasionally to avoid excessive output
+        if (nodes_processed % 1000 == 0) {
+            Logger::log("Node found in lookup table: site " + std::to_string(state.site));
+        }
         return it->second;
     }
     
     // Create new node
     DPNode* new_node = new DPNode(state);
+    
+    // Log only occasionally to avoid excessive output
+    if (nodes_created % 1000 == 0 || nodes_created < 10) {
+        Logger::log("Creating new node #" + std::to_string(nodes_created) + 
+                  " at site " + std::to_string(state.site) + 
+                  " with offsets (" + 
+                  std::to_string(state.cell_offset[0]) + "," + 
+                  std::to_string(state.cell_offset[1]) + "," + 
+                  std::to_string(state.cell_offset[2]) + ")");
+    }
     
     // Add to lookup table and queue
     node_lookup_table[state] = new_node;
@@ -577,6 +732,15 @@ void DPSolver::updateBenefit(DPNode* from_node,
             valid_target_cases.push_back(BOTH_STAPLES);
         }
         
+        // Log the valid cases for the first few iterations
+        if (nodes_processed < 5 || nodes_processed % 1000 == 0) {
+            std::string valid_cases_str = "Valid target cases:";
+            for (int case_idx : valid_target_cases) {
+                valid_cases_str += " " + std::to_string(case_idx);
+            }
+            Logger::log(valid_cases_str);
+        }
+        
         // Process each valid target case
         for (int to_case : valid_target_cases) {
             // Check for staggering violations
@@ -615,6 +779,7 @@ void DPSolver::updateBenefit(DPNode* from_node,
                                     (current_vss > current_vdd && can_insert_r1_r2 && isVDDRow(row_start)) ||
                                     (current_vss > current_vdd && can_insert_r2_r3 && isVDDRow(row_start + 1))) {
                                     staple_benefit = params.balance_factor;
+                                    Logger::log("Applied balance factor for NO_STAPLE case");
                                 }
                             }
                         }
@@ -676,18 +841,22 @@ void DPSolver::updateBenefit(DPNode* from_node,
                         // Encourage VSS staples
                         if (to_case == R1_R2_STAPLE && !isVDDRow(row_start)) {
                             new_benefit += balance_weight;
+                            Logger::log("Encouraged VSS staple: +" + std::to_string(balance_weight));
                         }
                         else if (to_case == R2_R3_STAPLE && !isVDDRow(row_start + 1)) {
                             new_benefit += balance_weight;
+                            Logger::log("Encouraged VSS staple: +" + std::to_string(balance_weight));
                         }
                     }
                     else if (new_vss > new_vdd) {
                         // Encourage VDD staples
                         if (to_case == R1_R2_STAPLE && isVDDRow(row_start)) {
                             new_benefit += balance_weight;
+                            Logger::log("Encouraged VDD staple: +" + std::to_string(balance_weight));
                         }
                         else if (to_case == R2_R3_STAPLE && isVDDRow(row_start + 1)) {
                             new_benefit += balance_weight;
+                            Logger::log("Encouraged VDD staple: +" + std::to_string(balance_weight));
                         }
                     }
                 }
@@ -695,6 +864,16 @@ void DPSolver::updateBenefit(DPNode* from_node,
             
             // Update benefit if better
             if (new_benefit > to_node->benefit[to_case]) {
+                // Log significant benefit improvements
+                if ((nodes_processed < 10 && staple_benefit > 0) || 
+                    (new_benefit > to_node->benefit[to_case] + 5)) {
+                    Logger::log("Significant benefit improvement: case " + std::to_string(to_case) + 
+                                " from " + std::to_string(to_node->benefit[to_case]) + 
+                                " to " + std::to_string(new_benefit) + 
+                                " (VDD: " + std::to_string(new_vdd) + 
+                                ", VSS: " + std::to_string(new_vss) + ")");
+                }
+                
                 to_node->benefit[to_case] = new_benefit;
                 to_node->prev_node[to_case] = from_node;
                 to_node->case_from_prev[to_case] = from_case;
@@ -714,6 +893,7 @@ std::vector<Staple> DPSolver::backtrack(
     
     std::vector<Staple> staples;
     if (!best_node) {
+        Logger::log("No solution found, nothing to backtrack");
         return staples;
     }
     
@@ -728,6 +908,12 @@ std::vector<Staple> DPSolver::backtrack(
         }
     }
     
+    Logger::log("Backtracking from site " + std::to_string(best_node->state.site) + 
+                " with best case " + std::to_string(best_case) + 
+                " (benefit: " + std::to_string(max_benefit) + 
+                ", VDD: " + std::to_string(best_node->vdd_staples[best_case]) + 
+                ", VSS: " + std::to_string(best_node->vss_staples[best_case]) + ")");
+    
     // Prepare to backtrack to update cell positions
     std::vector<std::pair<Cell*, std::pair<int, bool>>> cell_updates; // <cell, <new_x, flipped>>
     
@@ -736,11 +922,17 @@ std::vector<Staple> DPSolver::backtrack(
     int current_case = best_case;
     int site = chip_info.total_sites;
     
+    Logger::increaseIndent();
     Logger::log("Starting backtracking from site " + std::to_string(site) + 
                 " with best case " + std::to_string(best_case) + 
                 " (benefit: " + std::to_string(max_benefit) + ")");
     
+    int step = 0;
     while (current != nullptr && current->prev_node[current_case] != nullptr) {
+        step++;
+        Logger::log("Backtrack step " + std::to_string(step) + ", Site: " + std::to_string(site) + 
+                    ", Case: " + std::to_string(current_case));
+        
         // Get previous node and case
         DPNode* prev_node = current->prev_node[current_case];
         int prev_case = current->case_from_prev[current_case];
@@ -754,7 +946,8 @@ std::vector<Staple> DPSolver::backtrack(
                 bool is_vdd = isVDDRow(row_start);
                 staples.push_back(Staple(x, y, is_vdd));
                 Logger::log("Inserting R1-R2 staple at site " + std::to_string(site) + 
-                            ", position (" + std::to_string(x) + "," + std::to_string(y) + ")");
+                            ", position (" + std::to_string(x) + "," + std::to_string(y) + "), " +
+                            (is_vdd ? "VDD" : "VSS") + " type");
                 break;
             }
             
@@ -765,7 +958,8 @@ std::vector<Staple> DPSolver::backtrack(
                 bool is_vdd = isVDDRow(row_start + 1);
                 staples.push_back(Staple(x, y, is_vdd));
                 Logger::log("Inserting R2-R3 staple at site " + std::to_string(site) + 
-                            ", position (" + std::to_string(x) + "," + std::to_string(y) + ")");
+                            ", position (" + std::to_string(x) + "," + std::to_string(y) + "), " +
+                            (is_vdd ? "VDD" : "VSS") + " type");
                 break;
             }
             
@@ -781,12 +975,15 @@ std::vector<Staple> DPSolver::backtrack(
                 bool is_vdd2 = isVDDRow(row_start + 1);
                 staples.push_back(Staple(x, y2, is_vdd2));
                 
-                Logger::log("Inserting both staples at site " + std::to_string(site));
+                Logger::log("Inserting both staples at site " + std::to_string(site) + ": " +
+                            "R1-R2 (" + (is_vdd1 ? "VDD" : "VSS") + "), " +
+                            "R2-R3 (" + (is_vdd2 ? "VDD" : "VSS") + ")");
                 break;
             }
             
             case NO_STAPLE:
                 // No staple inserted
+                Logger::log("No staple at site " + std::to_string(site));
                 break;
         }
         
@@ -823,15 +1020,24 @@ std::vector<Staple> DPSolver::backtrack(
     }
     
     // Apply cell position updates
+    int total_updates = 0;
     for (const auto& update : cell_updates) {
         Cell* cell = update.first;
         int new_x = update.second.first;
         bool flipped = update.second.second;
         
-        // Update cell position
-        cell->current_x = new_x;
-        cell->is_flipped = flipped;
+        // Update cell position only if it's different
+        if (cell->current_x != new_x || cell->is_flipped != flipped) {
+            Logger::log("Cell " + std::to_string(cell->cell_index) + ": " +
+                        "Position " + std::to_string(cell->current_x) + "->" + std::to_string(new_x) + 
+                        ", Flipped " + std::to_string(cell->is_flipped) + "->" + std::to_string(flipped));
+            cell->current_x = new_x;
+            cell->is_flipped = flipped;
+            total_updates++;
+        }
     }
+    
+    Logger::log("Cell updates complete: " + std::to_string(total_updates) + " cells modified");
     
     // Reverse staples vector since we added them in reverse order
     std::reverse(staples.begin(), staples.end());
@@ -843,13 +1049,17 @@ std::vector<Staple> DPSolver::backtrack(
         else vss_count++;
     }
     
+    double ratio = 0.0;
     if (vdd_count > 0 && vss_count > 0) {
-        double ratio = static_cast<double>(std::max(vdd_count, vss_count)) / 
-                      std::min(vdd_count, vss_count);
-        Logger::log("Staple balance: VDD=" + std::to_string(vdd_count) + 
-                    ", VSS=" + std::to_string(vss_count) + 
-                    ", Ratio=" + std::to_string(ratio));
+        ratio = static_cast<double>(std::max(vdd_count, vss_count)) / 
+                std::min(vdd_count, vss_count);
     }
+    
+    Logger::log("Backtracking complete: " + std::to_string(staples.size()) + " staples inserted");
+    Logger::log("Final staple balance: VDD=" + std::to_string(vdd_count) + 
+                ", VSS=" + std::to_string(vss_count) + 
+                ", Ratio=" + std::to_string(ratio));
+    Logger::decreaseIndent();
     
     return staples;
 }
@@ -860,9 +1070,47 @@ std::vector<Staple> DPSolver::backtrack(
 void DPSolver::applyPlacementUpdates(
     const std::vector<std::vector<Cell*>>& cells_in_rows) {
     
-    // This function would apply any additional placement updates
-    // after backtracking. Currently, the cell updates are handled
-    // directly in the backtrack function.
+    Logger::log("Applying final cell placement updates");
+    Logger::increaseIndent();
+    
+    int total_cells = 0;
+    int cells_moved = 0;
+    int cells_flipped = 0;
+    
+    // Count total cells and check for any final updates needed
+    for (size_t row = 0; row < cells_in_rows.size(); row++) {
+        for (size_t i = 0; i < cells_in_rows[row].size(); i++) {
+            Cell* cell = cells_in_rows[row][i];
+            total_cells++;
+            
+            // Check if cell has been moved
+            if (cell->current_x != cell->initial_x) {
+                cells_moved++;
+                
+                // Calculate displacement in sites
+                int displacement = std::abs(cell->current_x - cell->initial_x) / chip_info.site_width;
+                if (displacement > 0) {
+                    Logger::log("Cell " + std::to_string(cell->cell_index) + 
+                              " moved by " + std::to_string(displacement) + 
+                              " sites (max allowed: " + std::to_string(cell->max_displacement) + ")");
+                }
+            }
+            
+            // Check if cell has been flipped
+            if (cell->is_flipped) {
+                cells_flipped++;
+            }
+        }
+    }
+    
+    Logger::log("Final placement stats:");
+    Logger::log("  Total cells: " + std::to_string(total_cells));
+    Logger::log("  Cells moved: " + std::to_string(cells_moved) + 
+                " (" + std::to_string(100.0 * cells_moved / total_cells) + "%)");
+    Logger::log("  Cells flipped: " + std::to_string(cells_flipped) + 
+                " (" + std::to_string(100.0 * cells_flipped / total_cells) + "%)");
+    
+    Logger::decreaseIndent();
 }
 
 /**
@@ -871,16 +1119,31 @@ void DPSolver::applyPlacementUpdates(
 bool DPSolver::isValidPlacement(const Cell* cell, int x, int y, bool is_flipped) {
     // Check if the placement is within displacement limit
     int displacement = std::abs(x - cell->initial_x);
-    if (displacement > cell->max_displacement * chip_info.site_width) {
+    int displacement_in_sites = displacement / chip_info.site_width;
+    
+    // Log only occasionally to avoid excessive output
+    bool should_log = (nodes_processed < 10) || (nodes_processed % 1000 == 0 && nodes_processed < 10000);
+    
+    if (displacement_in_sites > cell->max_displacement) {
+        if (should_log) {
+            Logger::log("Invalid placement: Cell " + std::to_string(cell->cell_index) + 
+                      " displacement " + std::to_string(displacement_in_sites) + 
+                      " exceeds max " + std::to_string(cell->max_displacement));
+        }
         return false;
     }
     
     // Check if the placement is in the same row
     if (y != cell->initial_y) {
+        if (should_log) {
+            Logger::log("Invalid placement: Cell " + std::to_string(cell->cell_index) + 
+                      " row changed from " + std::to_string(cell->initial_y) + 
+                      " to " + std::to_string(y));
+        }
         return false;
     }
     
-    // Additional checks can be added if needed
+    // Additional checks can be added here if needed
     
     return true;
 }
@@ -943,7 +1206,15 @@ CompactState DPSolver::getCompactState(
  */
 bool DPSolver::isVDDRow(int row_idx) const {
     // Even rows (0, 2, 4, ...) are VDD, odd rows are VSS
-    return (row_idx % 2 == 0);
+    bool is_vdd = (row_idx % 2 == 0);
+    
+    // Only log during the first few iterations to avoid excessive output
+    if (nodes_processed < 5) {
+        Logger::log("Row " + std::to_string(row_idx) + " is " + 
+                  (is_vdd ? "VDD" : "VSS") + " row");
+    }
+    
+    return is_vdd;
 }
 
 /**
@@ -956,9 +1227,16 @@ double DPSolver::calculateStapleBenefit(
     int row_start) {
     
     double base_benefit = 1.0;
+    bool should_log = (nodes_processed < 20) || (nodes_processed % 10000 == 0);
     
     // If no staples yet, use base benefit
     if (current_vdd == 0 || current_vss == 0) {
+        if (should_log) {
+            Logger::log("Base benefit " + std::to_string(base_benefit) + 
+                        " (no balance adjustment: " + 
+                        std::to_string(current_vdd) + " VDD, " + 
+                        std::to_string(current_vss) + " VSS)");
+        }
         return base_benefit;
     }
     
@@ -1010,13 +1288,31 @@ double DPSolver::calculateStapleBenefit(
         }
         
         // Adjust benefit
+        double adjusted_benefit;
         if (helps_balance) {
-            return base_benefit * (1.0 + adjustment);
+            adjusted_benefit = base_benefit * (1.0 + adjustment);
+            if (should_log) {
+                Logger::log("Increased benefit: " + std::to_string(base_benefit) + " -> " + 
+                           std::to_string(adjusted_benefit) + " (helps balance, ratio: " + 
+                           std::to_string(ratio) + ")");
+            }
         } else {
-            return base_benefit * (1.0 - adjustment * 0.5);
+            adjusted_benefit = base_benefit * (1.0 - adjustment * 0.5);
+            if (should_log) {
+                Logger::log("Decreased benefit: " + std::to_string(base_benefit) + " -> " + 
+                           std::to_string(adjusted_benefit) + " (hurts balance, ratio: " + 
+                           std::to_string(ratio) + ")");
+            }
         }
+        return adjusted_benefit;
     }
     
+    if (should_log) {
+        Logger::log("Using base benefit " + std::to_string(base_benefit) + 
+                   " (balanced: " + std::to_string(current_vdd) + " VDD, " + 
+                   std::to_string(current_vss) + " VSS, ratio: " + 
+                   std::to_string(ratio) + ")");
+    }
     return base_benefit;
 }
 
@@ -1024,6 +1320,9 @@ double DPSolver::calculateStapleBenefit(
  * @brief Clean up allocated memory
  */
 void DPSolver::cleanup() {
+    size_t nodes_to_delete = all_nodes.size();
+    Logger::log("Cleaning up " + std::to_string(nodes_to_delete) + " nodes");
+    
     // Delete all allocated nodes
     for (DPNode* node : all_nodes) {
         delete node;
@@ -1038,6 +1337,8 @@ void DPSolver::cleanup() {
     
     // Reset node pointers
     best_node = nullptr;
+    
+    Logger::log("Memory cleanup complete");
 }
 
 /**
@@ -1045,13 +1346,20 @@ void DPSolver::cleanup() {
  */
 void DPSolver::monitorMemoryUsage() {
     size_t node_count = all_nodes.size();
-    size_t estimated_memory = node_count * sizeof(DPNode);
+    size_t lookup_table_size = node_lookup_table.size();
+    size_t queue_size = node_queue.size();
+    size_t estimated_memory_bytes = node_count * sizeof(DPNode);
+    double estimated_memory_mb = static_cast<double>(estimated_memory_bytes) / (1024 * 1024);
     
-    Logger::log("Memory usage: ~" + std::to_string(estimated_memory / (1024 * 1024)) + 
-                " MB, Node count: " + std::to_string(node_count));
+    Logger::log("Memory stats:");
+    Logger::log("  Nodes in memory: " + std::to_string(node_count));
+    Logger::log("  Lookup table size: " + std::to_string(lookup_table_size));
+    Logger::log("  Queue size: " + std::to_string(queue_size));
+    Logger::log("  Estimated memory usage: " + std::to_string(estimated_memory_mb) + " MB");
     
     // Warning if memory usage is high
-    if (estimated_memory > 12ULL * 1024 * 1024 * 1024) {
-        Logger::log("WARNING: Memory usage approaching limit!");
+    if (estimated_memory_bytes > 12ULL * 1024 * 1024 * 1024) {
+        Logger::log("WARNING: Memory usage approaching limit of 16GB!");
+        std::cout << "WARNING: Memory usage approaching limit of 16GB!" << std::endl;
     }
 }
