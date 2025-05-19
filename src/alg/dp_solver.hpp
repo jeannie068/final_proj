@@ -230,6 +230,13 @@ private:
      * @brief Monitor memory usage and report statistics
      */
     void monitorMemoryUsage();
+
+    bool shouldApplyBalanceFactor(int current_vdd, int current_vss, int row_start, 
+                             bool can_insert_r1_r2, bool can_insert_r2_r3);
+    void applyStapleBalanceAdjustment(int& benefit, int vdd_count, int vss_count, 
+                                 int staple_case, int row_start);
+
+    void releaseNodesBeforeSite(int site);
 };
 
 #endif // DP_SOLVER_HPP

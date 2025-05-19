@@ -47,7 +47,7 @@ int main(int argc, char* argv[]) {
     
     // Print summary of parsed data
     Parser::printSummary(chip_info, cell_types, cells);
-    /*
+    
     // Create algorithm parameters
     AlgorithmParams params;
     params.balance_factor = 0.4;  // Beta factor for staple balance
@@ -83,7 +83,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Total staples inserted: " << solution.total_staples << std::endl;
     std::cout << "VDD staples: " << solution.vdd_staples << ", VSS staples: " << solution.vss_staples << std::endl;
     std::cout << "Staple ratio: " << solution.staple_ratio << std::endl;
-    */
     
     return EXIT_SUCCESS;
 }

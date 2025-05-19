@@ -43,7 +43,7 @@ Optimizer::Optimizer(const ChipInfo& chip_info,
  * @brief Run the optimization algorithm
  */
 Solution Optimizer::run() {
-    auto start_time = std::chrono::high_resolution_clock::now();
+    auto global_start_time = std::chrono::high_resolution_clock::now();
     Logger::log("Starting optimization process");
     
     // Solve the problem by processing triple-row subproblems
@@ -53,6 +53,17 @@ Solution Optimizer::run() {
     // Use increaseIndent() for nested logs
     Logger::increaseIndent();
     for (int row = 0; row < chip_info.num_rows - 2; row += 2) {
+        // Check total execution time
+        auto current_time = std::chrono::high_resolution_clock::now();
+        auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+            current_time - global_start_time).count();
+            
+        if (elapsed_seconds > 570) { // 590 seconds safety limit
+            Logger::log("WARNING: Approaching time limit (570s), stopping optimization early");
+            std::cout << "WARNING: Approaching time limit, stopping optimization early" << std::endl;
+            break;
+        }
+        
         Logger::log("Processing triple-row subproblem for rows " + std::to_string(row) + 
                     " to " + std::to_string(row+2));
         int row_end = std::min(row + 3, chip_info.num_rows);
@@ -68,7 +79,7 @@ Solution Optimizer::run() {
     Logger::decreaseIndent();
     
     auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - global_start_time);
     
     std::cout << "Optimization completed in " << duration.count() << " ms" << std::endl;
     Logger::log("Optimization completed with " + std::to_string(inserted_staples.size()) + " staples");

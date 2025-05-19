@@ -49,22 +49,20 @@ std::vector<Staple> DPSolver::solveTripleRow(
     const std::vector<Staple>& prev_staples) {
     
     auto start_time = std::chrono::high_resolution_clock::now();
+    const int time_limit_seconds = 120; // Safety limit
     
     Logger::log("====================================================");
-    Logger::log("Starting triple-row optimization for rows " + 
-                std::to_string(row_start) + " to " + 
-                std::to_string(row_start + 2));
-    Logger::log("Cells in row " + std::to_string(row_start) + ": " + 
+    Logger::log(Logger::DEBUG, "Cells in row " + std::to_string(row_start) + ": " + 
                 std::to_string(cells_in_rows[0].size()));
-    Logger::log("Cells in row " + std::to_string(row_start + 1) + ": " + 
+    Logger::log(Logger::DEBUG, "Cells in row " + std::to_string(row_start + 1) + ": " + 
                 std::to_string(cells_in_rows[1].size()));
-    Logger::log("Cells in row " + std::to_string(row_start + 2) + ": " + 
+    Logger::log(Logger::DEBUG, "Cells in row " + std::to_string(row_start + 2) + ": " + 
                 std::to_string(cells_in_rows[2].size()));
-    Logger::log("Previous staples: " + std::to_string(prev_staples.size()));
+    Logger::log(Logger::DEBUG, "Previous staples: " + std::to_string(prev_staples.size()));
     
     // Initialize the DAG
     DPNode* source_node = initializeDAG();
-    Logger::log("DAG initialized with source node");
+    Logger::log(Logger::DEBUG, "DAG initialized with source node");
     
     // Clear data structures for a fresh run
     best_node = nullptr;
@@ -83,17 +81,31 @@ std::vector<Staple> DPSolver::solveTripleRow(
     
     Logger::log("Beginning site-by-site processing, total sites: " + 
                 std::to_string(chip_info.total_sites));
+    
     // Process each site from left to right
     for (int site = 0; site <= chip_info.total_sites; site++) {
+        // Check time limit
+        auto current_time = std::chrono::high_resolution_clock::now();
+        auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+            current_time - start_time).count();
+            
+        if (elapsed_seconds > time_limit_seconds) {
+            Logger::log(Logger::WARNING, "WARNING: Time limit (" + std::to_string(time_limit_seconds) + 
+                      "s) reached, stopping processing early");
+            std::cout << "WARNING: Time limit reached at site " << site << "/" 
+                    << chip_info.total_sites << std::endl;
+            break;
+        }
+        
         processSite(site, cells_in_rows, prev_staples, row_start);
         
         // Log progress periodically
-        if (site % 500 == 0 || site == chip_info.total_sites) {
+        if (site % 1000 == 0 || site == chip_info.total_sites) {
             auto current_time = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 current_time - start_time);
             
-            Logger::log("Site " + std::to_string(site) + "/" + 
+            Logger::log(Logger::TRACE, "Site " + std::to_string(site) + "/" + 
                         std::to_string(chip_info.total_sites) + 
                         " processed in " + std::to_string(duration.count()) + " ms, " +
                         "queue size: " + std::to_string(node_queue.size()) + 
@@ -109,7 +121,7 @@ std::vector<Staple> DPSolver::solveTripleRow(
         if (site < chip_info.total_sites) {
             size_t before_size = node_lookup_table.size();
             node_lookup_table.clear();
-            Logger::log("Lookup table cleared: " + std::to_string(before_size) + 
+            Logger::log(Logger::DEBUG, "Lookup table cleared: " + std::to_string(before_size) + 
                         " entries removed");
         }
     }
@@ -201,8 +213,11 @@ void DPSolver::processSite(int site,
                         const std::vector<Staple>& prev_staples,
                         int row_start) {
     
+    auto process_start_time = std::chrono::high_resolution_clock::now();
+    const int max_processing_ms = 30000; // 30 seconds max per site
+    
     size_t nodes_to_process = node_queue.size();
-    Logger::log("Processing site " + std::to_string(site) + 
+    Logger::log(Logger::INFO, "Processing site " + std::to_string(site) + 
                 ", nodes to process: " + std::to_string(nodes_to_process));
     Logger::increaseIndent();
     
@@ -210,13 +225,28 @@ void DPSolver::processSite(int site,
     size_t valid_extensions = 0;
     
     for (size_t i = 0; i < nodes_to_process; i++) {
+        // Check processing time limit periodically
+        if (i % 1000 == 0 && i > 0) {
+            auto current_time = std::chrono::high_resolution_clock::now();
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                current_time - process_start_time).count();
+                
+            if (elapsed_ms > max_processing_ms) {
+                Logger::log(Logger::WARNING, "Site processing taking too long (" + 
+                          std::to_string(elapsed_ms/1000) + " seconds), limiting node processing");
+                std::cout << "WARNING: Site " << site << " processing timeout, processed " 
+                        << i << "/" << nodes_to_process << " nodes" << std::endl;
+                break;
+            }
+        }
+        
         DPNode* node = node_queue.front();
         node_queue.pop();
         nodes_processed++;
         
         // Skip if node is not at the current site
         if (node->state.site != site) {
-            Logger::log("Node skipped, not at current site. Node site: " + 
+            Logger::log(Logger::TRACE, "Node skipped, not at current site. Node site: " + 
                       std::to_string(node->state.site) + ", Current site: " + 
                       std::to_string(site));
             continue;
@@ -226,9 +256,9 @@ void DPSolver::processSite(int site,
         std::vector<Extension> extensions = generateExtensions(node, site, cells_in_rows, row_start);
         extensions_count += extensions.size();
         
-        // Log every 1000th node for visibility
-        if (nodes_processed % 1000 == 0 || nodes_to_process < 10) {
-            Logger::log("Node " + std::to_string(nodes_processed) + 
+        // Log less frequently for better performance
+        if (nodes_processed % 10000 == 0 || nodes_to_process < 10) {
+            Logger::log(Logger::DEBUG, "Node " + std::to_string(nodes_processed) + 
                         ": Generated " + std::to_string(extensions.size()) + 
                         " extensions");
         }
@@ -269,24 +299,56 @@ void DPSolver::processSite(int site,
                     if (target_node->benefit[case_idx] > max_benefit) {
                         max_benefit = target_node->benefit[case_idx];
                         best_node = target_node;
-                        Logger::log("New best node found at final site: benefit = " + 
+                        Logger::log(Logger::INFO, "New best node found at final site: benefit = " + 
                                   std::to_string(max_benefit) + ", case = " + 
                                   std::to_string(case_idx));
                     }
                 }
             }
         }
+        
+        // Check processing time again every 5000 extensions to catch extremely 
+        // computation-intensive node processing
+        if (extensions_count % 5000 == 0 && extensions_count > 0) {
+            auto current_time = std::chrono::high_resolution_clock::now();
+            auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                current_time - process_start_time).count();
+                
+            if (elapsed_ms > max_processing_ms) {
+                Logger::log(Logger::WARNING, "Extensions processing taking too long (" + 
+                          std::to_string(elapsed_ms/1000) + " seconds), stopping early");
+                break;
+            }
+        }
     }
     
     Logger::decreaseIndent();
+    
+    // Log completion summary
     if (extensions_count > 0) {
-        Logger::log("Site " + std::to_string(site) + " complete: " + 
+        Logger::log(Logger::INFO, "Site " + std::to_string(site) + " complete: " + 
                     std::to_string(extensions_count) + " total extensions, " + 
                     std::to_string(valid_extensions) + " valid extensions");
     }
     
+    // Log memory usage only occasionally
+    if (site % 500 == 0 || site == chip_info.total_sites) {
+        Logger::log(Logger::INFO, "Current nodes in memory: " + std::to_string(all_nodes.size()));
+    }
+    
     // Update max nodes count stat
     max_nodes_count = std::max(max_nodes_count, all_nodes.size());
+    
+    // Report total processing time for performance monitoring
+    auto current_time = std::chrono::high_resolution_clock::now();
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        current_time - process_start_time).count();
+        
+    if (elapsed_ms > 5000) {  // Only log if took more than 5 seconds
+        Logger::log(Logger::INFO, "Site " + std::to_string(site) + 
+                  " processing took " + std::to_string(elapsed_ms/1000.0) + 
+                  " seconds, queue size now: " + std::to_string(node_queue.size()));
+    }
 }
 
 /**
@@ -300,7 +362,7 @@ std::vector<Extension> DPSolver::generateExtensions(
     
     std::vector<Extension> extensions;
     Logger::increaseIndent();
-    Logger::log("Generating extensions at site " + std::to_string(site));
+    Logger::log(Logger::TRACE, "Generating extensions at site " + std::to_string(site));
     
     // Extract current state information
     int s1 = node->state.cell_offset[0];
@@ -315,7 +377,7 @@ std::vector<Extension> DPSolver::generateExtensions(
     int l3 = node->state.displacement[2];
     bool f3 = node->state.is_flipped[2];
     
-    Logger::log("Current state: s1=" + std::to_string(s1) + 
+    Logger::log(Logger::TRACE, "Current state: s1=" + std::to_string(s1) + 
                 ", l1=" + std::to_string(l1) + 
                 ", f1=" + std::to_string(f1) + 
                 ", s2=" + std::to_string(s2) + 
@@ -549,8 +611,8 @@ bool DPSolver::canInsertStaple(int site,
     // First row to check
     int row1 = row;
     if (row1 >= static_cast<int>(cells_in_rows.size())) {
-        Logger::log("Cannot insert staple: Invalid row1 index " + std::to_string(row1));
-        Logger::decreaseIndent();
+        // Logger::log("Cannot insert staple: Invalid row1 index " + std::to_string(row1));
+        // Logger::decreaseIndent();
         return false;
     }
     
@@ -569,9 +631,9 @@ bool DPSolver::canInsertStaple(int site,
             // Cell crosses the site, check if there's a pin
             int relative_site = site - (cell1->initial_x / chip_info.site_width + l1);
             if (type1.hasPinAt(relative_site, f1)) {
-                Logger::log("Cannot insert staple at site " + std::to_string(site) + 
-                          ", row " + std::to_string(row) + ": pin collision in row1");
-                Logger::decreaseIndent();
+                // Logger::log("Cannot insert staple at site " + std::to_string(site) + 
+                //           ", row " + std::to_string(row) + ": pin collision in row1");
+                // Logger::decreaseIndent();
                 return false;
             }
         }
@@ -580,8 +642,8 @@ bool DPSolver::canInsertStaple(int site,
     // Second row to check
     int row2 = row + 1;
     if (row2 >= static_cast<int>(cells_in_rows.size())) {
-        Logger::log("Cannot insert staple: Invalid row2 index " + std::to_string(row2));
-        Logger::decreaseIndent();
+        // Logger::log("Cannot insert staple: Invalid row2 index " + std::to_string(row2));
+        // Logger::decreaseIndent();
         return false;
     }
     
@@ -600,16 +662,16 @@ bool DPSolver::canInsertStaple(int site,
             // Cell crosses the site, check if there's a pin
             int relative_site = site - (cell2->initial_x / chip_info.site_width + l2);
             if (type2.hasPinAt(relative_site, f2)) {
-                Logger::log("Cannot insert staple at site " + std::to_string(site) + 
-                          ", row " + std::to_string(row) + ": pin collision in row2");
-                Logger::decreaseIndent();
+                // Logger::log("Cannot insert staple at site " + std::to_string(site) + 
+                //           ", row " + std::to_string(row) + ": pin collision in row2");
+                // Logger::decreaseIndent();
                 return false;
             }
         }
     }
     
     // If we reach here, there's no obstruction
-    Logger::decreaseIndent();
+    // Logger::decreaseIndent();
     return true;
 }
 
@@ -738,7 +800,7 @@ void DPSolver::updateBenefit(DPNode* from_node,
             for (int case_idx : valid_target_cases) {
                 valid_cases_str += " " + std::to_string(case_idx);
             }
-            Logger::log(valid_cases_str);
+            Logger::log(Logger::TRACE, valid_cases_str);
         }
         
         // Process each valid target case
@@ -867,7 +929,7 @@ void DPSolver::updateBenefit(DPNode* from_node,
                 // Log significant benefit improvements
                 if ((nodes_processed < 10 && staple_benefit > 0) || 
                     (new_benefit > to_node->benefit[to_case] + 5)) {
-                    Logger::log("Significant benefit improvement: case " + std::to_string(to_case) + 
+                    Logger::log(Logger::DEBUG, "Significant benefit improvement: case " + std::to_string(to_case) + 
                                 " from " + std::to_string(to_node->benefit[to_case]) + 
                                 " to " + std::to_string(new_benefit) + 
                                 " (VDD: " + std::to_string(new_vdd) + 
@@ -893,7 +955,7 @@ std::vector<Staple> DPSolver::backtrack(
     
     std::vector<Staple> staples;
     if (!best_node) {
-        Logger::log("No solution found, nothing to backtrack");
+        Logger::log(Logger::WARNING, "No solution found, nothing to backtrack");
         return staples;
     }
     
@@ -908,7 +970,7 @@ std::vector<Staple> DPSolver::backtrack(
         }
     }
     
-    Logger::log("Backtracking from site " + std::to_string(best_node->state.site) + 
+    Logger::log(Logger::INFO, "Backtracking from site " + std::to_string(best_node->state.site) + 
                 " with best case " + std::to_string(best_case) + 
                 " (benefit: " + std::to_string(max_benefit) + 
                 ", VDD: " + std::to_string(best_node->vdd_staples[best_case]) + 
