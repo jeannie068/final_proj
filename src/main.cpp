@@ -7,6 +7,7 @@
  */
 
 #include "data_structure/data_structure.hpp"
+#include "Logger.hpp"
 #include "parser/parser.hpp"
 #include "alg/optimizer.hpp"
 #include <iostream>
@@ -27,6 +28,9 @@ int main(int argc, char* argv[]) {
         std::cerr << "Usage: " << argv[0] << " <input file> <output file>" << std::endl;
         return EXIT_FAILURE;
     }
+    
+    Logger::init("optimizer_log.txt");
+    Logger::setLogLevel(Logger::INFO);
     
     std::string input_file = argv[1];
     std::string output_file = argv[2];

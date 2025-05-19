@@ -18,8 +18,6 @@ Optimizer::Optimizer(const ChipInfo& chip_info,
                    const AlgorithmParams& params)
     : chip_info(chip_info), cell_types(cell_types), cells(cells), params(params) {
     
-    Logger::init("optimizer_log.txt");
-    
     // Organize cells by row
     cells_by_row.resize(chip_info.num_rows);
     for (const Cell& cell : cells) {
