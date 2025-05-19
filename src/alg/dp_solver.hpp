@@ -166,7 +166,13 @@ private:
     std::vector<Staple> backtrack(
         const std::vector<std::vector<Cell*>>& cells_in_rows,
         int row_start);
-    
+
+    void pruneNodes(int site);
+
+    std::vector<Staple> solveTripleRowWithWindows(const std::vector<std::vector<Cell *>> &cells_in_rows, int row_start, const std::vector<Staple> &prev_staples);
+
+    std::vector<Staple> solveTripleRowWindow(const std::vector<std::vector<Cell *>> &window_cells, int row_start, const std::vector<Staple> &window_prev_staples, int window_start, int window_end);
+
     /**
      * @brief Apply final cell placement updates
      * @param cells_in_rows Cells in each row
@@ -235,6 +241,12 @@ private:
                              bool can_insert_r1_r2, bool can_insert_r2_r3);
     void applyStapleBalanceAdjustment(int& benefit, int vdd_count, int vss_count, 
                                  int staple_case, int row_start);
+
+    bool isPromisingSolution(const CompactState &state);
+
+    std::vector<std::vector<Cell *>> extractCellsForWindow(const std::vector<std::vector<Cell *>> &cells_in_rows, int window_start, int window_end);
+
+    std::vector<Staple> extractStaplesForWindow(const std::vector<Staple> &staples, int window_start, int window_end);
 
     void releaseNodesBeforeSite(int site);
 };

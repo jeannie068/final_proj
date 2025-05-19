@@ -42,7 +42,7 @@ Optimizer::Optimizer(const ChipInfo& chip_info,
  */
 Solution Optimizer::run() {
     auto global_start_time = std::chrono::high_resolution_clock::now();
-    Logger::log("Starting optimization process");
+    Logger::log(Logger::DEBUG, "Starting optimization process");
     
     // Solve the problem by processing triple-row subproblems
     std::vector<Staple> prev_staples;
@@ -56,7 +56,7 @@ Solution Optimizer::run() {
         auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(
             current_time - global_start_time).count();
             
-        if (elapsed_seconds > 570) { // 590 seconds safety limit
+        if (elapsed_seconds > 500) { // 590 seconds safety limit
             Logger::log("WARNING: Approaching time limit (570s), stopping optimization early");
             std::cout << "WARNING: Approaching time limit, stopping optimization early" << std::endl;
             break;

@@ -24,9 +24,9 @@ public:
     enum LogLevel {
         ERROR = 0,
         WARNING = 1,
-        INFO = 2,
-        DEBUG = 3,
-        TRACE = 4
+        DEBUG = 2,
+        TRACE = 3,
+        INFO = 4
     };
 
     static void init(const std::string& filename = "debug_log.txt", int level = INFO) {

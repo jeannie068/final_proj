@@ -216,10 +216,11 @@ struct CompactStateHasher {
  * @brief Staple insertion cases as defined in the paper
  */
 enum StapleCase {
-    NO_STAPLE = 0,      // Case 1: No staple inserted
-    R1_R2_STAPLE = 1,   // Case 2: Staple between R1 and R2
-    R2_R3_STAPLE = 2,   // Case 3: Staple between R2 and R3
-    BOTH_STAPLES = 3,   // Case 4: Both staples (R1-R2 and R2-R3)
+    NO_STAPLE = 0,        // Case 1: No staple inserted
+    R1_R2_STAPLE = 1,     // Case 2: Staple between R1 and R2
+    R2_R3_STAPLE = 2,     // Case 3: Staple between R2 and R3
+    BOTH_STAPLES = 3,     // Case 4: Both staples (R1-R2 and R2-R3)
+    SPECIAL_CASE = 4      // Case 5: Special configurations
 };
 
 /**
@@ -228,21 +229,22 @@ enum StapleCase {
 struct DPNode {
     CompactState state;     // Current state
     
-    // For each staple insertion case (4 cases simplify than paper)
-    int benefit[4];         // Max accumulated staple benefit
-    DPNode* prev_node[4];   // Previous node pointer
-    int case_from_prev[4];  // Case in previous node
+    // Five staple insertion scenarios
+    static const int NUM_CASES = 5;
+    int benefit[NUM_CASES];        // Max accumulated staple benefit
+    DPNode* prev_node[NUM_CASES];  // Previous node pointer
+    int prev_case[NUM_CASES];      // Case in previous node
     
     // For staple balance constraint
-    int vdd_staples[4];     // VDD staple count
-    int vss_staples[4];     // VSS staple count
+    int vdd_staples[NUM_CASES];     // VDD staple count
+    int vss_staples[NUM_CASES];     // VSS staple count
     
     // Constructor
     DPNode(const CompactState& s) : state(s) {
-        for (int i = 0; i < 4; i++) {
-            benefit[i] = (i == 0) ? 0 : -1000000; // Initialize case 0 with 0, others with large negative
+        for (int i = 0; i < NUM_CASES; i++) {
+            benefit[i] = (i == NO_STAPLE) ? 0 : -1000000; // Initialize case 0 with 0, others with large negative
             prev_node[i] = nullptr;
-            case_from_prev[i] = -1;
+            prev_case[i] = -1;
             vdd_staples[i] = 0;
             vss_staples[i] = 0;
         }
