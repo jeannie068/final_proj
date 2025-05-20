@@ -105,7 +105,7 @@ std::vector<Staple> DPSolver::solveTripleRow(
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 current_time - start_time);
             
-            Logger::log(Logger::INFO, "Site " + std::to_string(site) + "/" + 
+            Logger::log(Logger::DEBUG, "Site " + std::to_string(site) + "/" + 
                         std::to_string(chip_info.total_sites) + 
                         " processed in " + std::to_string(duration.count()) + " ms, " +
                         "queue size: " + std::to_string(node_queue.size()) + 
@@ -121,7 +121,7 @@ std::vector<Staple> DPSolver::solveTripleRow(
         if (site < chip_info.total_sites) {
             size_t before_size = node_lookup_table.size();
             node_lookup_table.clear();
-            Logger::log(Logger::DEBUG, "Lookup table cleared: " + std::to_string(before_size) + 
+            Logger::log(Logger::INFO, "Lookup table cleared: " + std::to_string(before_size) + 
                         " entries removed");
         }
     }
@@ -219,7 +219,7 @@ void DPSolver::processSite(int site,
     size_t nodes_to_process = node_queue.size();
     Logger::log(Logger::INFO, "Processing site " + std::to_string(site) + 
                 ", nodes to process: " + std::to_string(nodes_to_process));
-    Logger::increaseIndent();
+    // Logger::increaseIndent();
     
     size_t extensions_count = 0;
     size_t valid_extensions = 0;
@@ -322,7 +322,7 @@ void DPSolver::processSite(int site,
         }
     }
     
-    Logger::decreaseIndent();
+    // Logger::decreaseIndent();
     
     // Log completion summary
     if (extensions_count > 0) {
@@ -365,8 +365,8 @@ std::vector<Extension> DPSolver::generateExtensions(
     int row_start) {
     
     std::vector<Extension> extensions;
-    Logger::increaseIndent();
-    Logger::log("Generating extensions at site " + std::to_string(site));
+    // Logger::increaseIndent();
+    Logger::log(Logger::DEBUG, "Generating extensions at site " + std::to_string(site));
     
     // Extract current state information
     int s1 = node->state.cell_offset[0];
@@ -381,7 +381,7 @@ std::vector<Extension> DPSolver::generateExtensions(
     int l3 = node->state.displacement[2];
     bool f3 = node->state.is_flipped[2];
     
-    Logger::log("Current state: s1=" + std::to_string(s1) + 
+    Logger::log(Logger::DEBUG, "Current state: s1=" + std::to_string(s1) + 
                 ", l1=" + std::to_string(l1) + 
                 ", s2=" + std::to_string(s2) + 
                 ", l2=" + std::to_string(l2) + 
@@ -630,6 +630,13 @@ std::vector<Extension> DPSolver::generateExtensions(
             ext.vss_count = 1 - ext.vdd_count;
         }
     }
+
+    // Also log details of each extension
+    for (size_t i = 0; i < extensions.size(); i++) {
+        const Extension& ext = extensions[i];
+        Logger::log(Logger::DEBUG, "  Extension " + std::to_string(i) + 
+                    ": benefit=" + std::to_string(ext.staple_benefit));
+    }
     
     Logger::log("Generated " + std::to_string(extensions.size()) + " extensions");
     std::string ss1, ss2;
@@ -639,7 +646,7 @@ std::vector<Extension> DPSolver::generateExtensions(
     else ss2 = "";
 
     Logger::log("Staple possibilities: " + ss1 + ss2);
-    Logger::decreaseIndent();
+    // Logger::decreaseIndent();
     
     return extensions;
 }
@@ -652,7 +659,7 @@ bool DPSolver::canInsertStaple(int site,
                              const std::vector<std::vector<Cell*>>& cells_in_rows,
                              DPNode* node) {
     // Check if the two adjacent rows have empty space at the given site
-    Logger::increaseIndent();
+    // Logger::increaseIndent();
     
     // First row to check
     int row1 = row;
@@ -956,7 +963,7 @@ std::vector<Staple> DPSolver::backtrack(
     int current_case = best_case;
     int site = chip_info.total_sites;
     
-    Logger::increaseIndent();
+    // Logger::increaseIndent();
     Logger::log("Starting backtracking from site " + std::to_string(site) + 
                 " with best case " + std::to_string(best_case) + 
                 " (benefit: " + std::to_string(max_benefit) + ")");
@@ -1093,7 +1100,7 @@ std::vector<Staple> DPSolver::backtrack(
     Logger::log("Final staple balance: VDD=" + std::to_string(vdd_count) + 
                 ", VSS=" + std::to_string(vss_count) + 
                 ", Ratio=" + std::to_string(ratio));
-    Logger::decreaseIndent();
+    // Logger::decreaseIndent();
     
     return staples;
 }
@@ -1183,134 +1190,6 @@ void DPSolver::pruneNodes(int site) {
     }
 }
 
-std::vector<Staple> DPSolver::solveTripleRowWithWindows(
-    const std::vector<std::vector<Cell*>>& cells_in_rows,
-    int row_start,
-    const std::vector<Staple>& prev_staples) {
-    
-    Logger::log("Starting triple-row optimization with windows for rows " + 
-                std::to_string(row_start) + " to " + 
-                std::to_string(row_start + 2));
-    
-    std::vector<Staple> all_staples;
-    
-    // Determine window size based on problem size and memory constraints
-    // Smaller windows for larger problems to manage memory
-    const int WINDOW_SIZE = std::min(200, std::max(50, chip_info.total_sites / 5));
-    const int OVERLAP = WINDOW_SIZE / 3;  // Overlap between windows
-    
-    Logger::log("Using window size: " + std::to_string(WINDOW_SIZE) + 
-                " with overlap: " + std::to_string(OVERLAP));
-    
-    // Process windows from left to right
-    for (int window_start = 0; window_start < chip_info.total_sites; window_start += (WINDOW_SIZE - OVERLAP)) {
-        int window_end = std::min(window_start + WINDOW_SIZE, chip_info.total_sites);
-        
-        Logger::log("Processing window from site " + std::to_string(window_start) + 
-                    " to " + std::to_string(window_end));
-        
-        // Extract only the cells relevant to this window
-        std::vector<std::vector<Cell*>> window_cells = extractCellsForWindow(
-            cells_in_rows, window_start, window_end);
-        
-        // Extract only the previous staples relevant to this window
-        std::vector<Staple> window_prev_staples = extractStaplesForWindow(
-            prev_staples, window_start, window_end);
-        
-        // Extract any staples already placed in previous windows that might affect this window
-        std::vector<Staple> window_all_prev_staples = window_prev_staples;
-        for (const Staple& staple : all_staples) {
-            if (staple.x / chip_info.site_width >= window_start - OVERLAP && 
-                staple.x / chip_info.site_width < window_start) {
-                window_all_prev_staples.push_back(staple);
-            }
-        }
-        
-        // Process this window
-        std::vector<Staple> window_staples = solveTripleRowWindow(
-            window_cells, row_start, window_all_prev_staples, window_start, window_end);
-        
-        // Add window staples to solution, but skip overlapping region if this isn't the first window
-        for (const Staple& staple : window_staples) {
-            int staple_site = staple.x / chip_info.site_width;
-            if (window_start == 0 || staple_site >= window_start) {
-                all_staples.push_back(staple);
-            }
-        }
-        
-        Logger::log("Window complete: " + std::to_string(window_staples.size()) + 
-                    " staples inserted in window");
-        
-        // Clean up memory between windows
-        cleanup();
-    }
-    
-    Logger::log("Window-based optimization complete: " + std::to_string(all_staples.size()) + 
-                " total staples inserted");
-    
-    return all_staples;
-}
-
-// Specialized window solver
-std::vector<Staple> DPSolver::solveTripleRowWindow(
-    const std::vector<std::vector<Cell*>>& window_cells,
-    int row_start,
-    const std::vector<Staple>& window_prev_staples,
-    int window_start,
-    int window_end) {
-    
-    // Adjust internal site indices to be relative to window
-    int relative_window_size = window_end - window_start;
-    
-    // Initialize the DAG
-    DPNode* source_node = initializeDAG();
-    source_node->state.site = window_start;
-    
-    // Clear data structures for a fresh run
-    best_node = nullptr;
-    max_benefit = -1;
-    
-    // Clear lookup table and queue
-    node_lookup_table.clear();
-    while (!node_queue.empty()) node_queue.pop();
-    all_nodes.clear();
-    
-    // Add source node
-    node_queue.push(source_node);
-    node_lookup_table[source_node->state] = source_node;
-    all_nodes.push_back(source_node);
-    nodes_created = 1;
-    
-    // Process each site in the window
-    for (int site = window_start; site <= window_end; site++) {
-        processSite(site, window_cells, window_prev_staples, row_start);
-        
-        // Periodically prune nodes to save memory
-        if ((site - window_start) % 10 == 0 && site > window_start) {
-            pruneNodes(site);
-        }
-        
-        // Clear lookup table after processing each site to save memory
-        if (site < window_end) {
-            node_lookup_table.clear();
-        }
-    }
-    
-    // Backtrack to get optimal solution
-    std::vector<Staple> inserted_staples;
-    if (best_node != nullptr) {
-        inserted_staples = backtrack(window_cells, row_start);
-        
-        // Adjust staple positions to global coordinates if needed
-        // (In this case, they're already in global coordinates)
-    }
-    
-    // Apply cell placement updates
-    applyPlacementUpdates(window_cells);
-    
-    return inserted_staples;
-}
-
 /**
  * @brief Apply final cell placement updates
  */
@@ -1318,7 +1197,7 @@ void DPSolver::applyPlacementUpdates(
     const std::vector<std::vector<Cell*>>& cells_in_rows) {
     
     Logger::log("Applying final cell placement updates");
-    Logger::increaseIndent();
+    // Logger::increaseIndent();
     
     int total_cells = 0;
     int cells_moved = 0;
@@ -1357,7 +1236,7 @@ void DPSolver::applyPlacementUpdates(
     Logger::log("  Cells flipped: " + std::to_string(cells_flipped) + 
                 " (" + std::to_string(100.0 * cells_flipped / total_cells) + "%)");
     
-    Logger::decreaseIndent();
+    // Logger::decreaseIndent();
 }
 
 /**
@@ -1694,56 +1573,5 @@ bool DPSolver::isPromisingSolution(const CompactState& state) {
     }
     
     return true;
-}
-
-// Helper function to extract cells for a window
-std::vector<std::vector<Cell*>> DPSolver::extractCellsForWindow(
-    const std::vector<std::vector<Cell*>>& cells_in_rows,
-    int window_start,
-    int window_end) {
-    
-    std::vector<std::vector<Cell*>> window_cells;
-    window_cells.resize(cells_in_rows.size());
-    
-    for (size_t row = 0; row < cells_in_rows.size(); row++) {
-        for (Cell* cell : cells_in_rows[row]) {
-            int cell_start_site = cell->initial_x / chip_info.site_width;
-            int cell_width = cell_types[cell->type_index].cellSiteWidth;
-            int cell_end_site = cell_start_site + cell_width;
-            
-            // Include cell if it overlaps with the window or is adjacent to it
-            // Use a buffer zone to include cells that might be moved into the window
-            const int BUFFER = 7;  // Max displacement
-            if ((cell_start_site >= window_start - BUFFER && cell_start_site < window_end + BUFFER) ||
-                (cell_end_site > window_start - BUFFER && cell_end_site <= window_end + BUFFER) ||
-                (cell_start_site <= window_start - BUFFER && cell_end_site >= window_end + BUFFER)) {
-                window_cells[row].push_back(cell);
-            }
-        }
-    }
-    
-    return window_cells;
-}
-
-// Helper function to extract staples for a window
-std::vector<Staple> DPSolver::extractStaplesForWindow(
-    const std::vector<Staple>& staples,
-    int window_start,
-    int window_end) {
-    
-    std::vector<Staple> window_staples;
-    
-    for (const Staple& staple : staples) {
-        int staple_site = staple.x / chip_info.site_width;
-        
-        // Include staples in the window and also those adjacent to it
-        // that might cause staggering violations
-        const int BUFFER = 1;  // Only need adjacent sites for staggering
-        if (staple_site >= window_start - BUFFER && staple_site < window_end + BUFFER) {
-            window_staples.push_back(staple);
-        }
-    }
-    
-    return window_staples;
 }
 
