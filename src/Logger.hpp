@@ -25,8 +25,8 @@ public:
         ERROR = 0,
         WARNING = 1,
         DEBUG = 2,
-        TRACE = 3,
-        INFO = 4
+        INFO = 3,
+        TRACE = 4
     };
 
     static void init(const std::string& filename = "debug_log.txt", int level = INFO) {
@@ -104,7 +104,7 @@ public:
     // Legacy method for backward compatibility
     template<typename T>
     static void log(const T& message) {
-        log(INFO, message);
+        log(TRACE, message);
     }
 };
 

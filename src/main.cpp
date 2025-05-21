@@ -30,7 +30,7 @@ int main(int argc, char* argv[]) {
     }
     
     Logger::init("optimizer_log.txt");
-    Logger::setLogLevel(Logger::DEBUG);
+    Logger::setLogLevel(Logger::INFO);
     
     std::string input_file = argv[1];
     std::string output_file = argv[2];

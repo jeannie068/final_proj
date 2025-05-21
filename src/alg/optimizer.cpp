@@ -42,7 +42,7 @@ Optimizer::Optimizer(const ChipInfo& chip_info,
  */
 Solution Optimizer::run() {
     auto global_start_time = std::chrono::high_resolution_clock::now();
-    Logger::log(Logger::DEBUG, "Starting optimization process");
+    Logger::log(Logger::INFO, "Starting optimization process");
     
     // Solve the problem by processing triple-row subproblems
     std::vector<Staple> prev_staples;
