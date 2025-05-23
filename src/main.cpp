@@ -8,6 +8,7 @@
 
 #include "data_structure/data_structure.hpp"
 #include "Logger.hpp"
+#include "memory_usage.hpp"
 #include "parser/parser.hpp"
 #include "alg/optimizer.hpp"
 #include <iostream>

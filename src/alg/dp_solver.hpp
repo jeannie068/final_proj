@@ -1,11 +1,10 @@
 /**
  * @file dp_solver.hpp
- * @brief Dynamic programming solver for power staple insertion optimization
+ * @brief Dynamic programming solver for manufacturing-aware power staple insertion
  * 
- * This file contains the declarations for the DAG-based dynamic programming
- * solver used for power staple insertion optimization, implementing the
- * approach described in "Manufacturing-Aware Power Staple Insertion Optimization
- * by Enhanced Multi-Row Detailed Placement Refinement".
+ * This file implements the DAG-based dynamic programming approach for triple-row
+ * optimization as described in "Manufacturing-Aware Power Staple Insertion 
+ * Optimization by Enhanced Multi-Row Detailed Placement Refinement" (ASP-DAC 2021).
  */
 
 #ifndef DP_SOLVER_HPP
@@ -20,235 +19,196 @@
 #include <chrono>
 #include <iostream>
 
+
 /**
- * @brief Dynamic programming solver for power staple insertion optimization
+ * @brief Dynamic programming solver for triple-row optimization
  */
 class DPSolver {
 public:
-    /**
-     * @brief Constructor
-     * @param chip_info Chip information
-     * @param cell_types Vector of cell types
-     * @param params Algorithm parameters
-     */
     DPSolver(const ChipInfo& chip_info, 
              const std::vector<CellType>& cell_types,
              const AlgorithmParams& params = AlgorithmParams());
     
-    /**
-     * @brief Destructor
-     */
     ~DPSolver();
     
     /**
-     * @brief Solve a triple-row optimization problem
-     * @param cells_in_rows Cells in each of the three rows being optimized
-     * @param row_start Start row index in the global layout
-     * @param prev_staples Staples inserted in previous optimization rounds
-     * @return Vector of newly inserted staples
+     * @brief Solve triple-row optimization problem using MATRO algorithm
      */
     std::vector<Staple> solveTripleRow(
         const std::vector<std::vector<Cell*>>& cells_in_rows,
         int row_start,
         const std::vector<Staple>& prev_staples);
+
     
+
 private:
     // Input data
     ChipInfo chip_info;
     std::vector<CellType> cell_types;
     AlgorithmParams params;
     
-    // Memory management
-    std::unordered_map<CompactState, DPNode*, CompactStateHasher> node_lookup_table;
+    // DAG structure
     std::queue<DPNode*> node_queue;
-    std::vector<DPNode*> all_nodes;  // For cleanup
+    std::unordered_map<CompactState, DPNode*, CompactStateHasher> node_lookup;
+    std::vector<DPNode*> all_nodes;  // For memory cleanup
     
-    // Best node tracking
-    DPNode* best_node;
-    int max_benefit;
-    
-    // Stats for memory monitoring
-    size_t max_nodes_count;
+    // Tracking
+    DPNode* best_final_node;
+    int best_final_case;
     size_t nodes_created;
-    size_t nodes_processed;
+    size_t max_nodes_in_memory;
+    
+    // Initial cell positions for compact encoding
+    int initial_s[3];
+
+    // Pruning
+    static const int MAX_NODES_PER_SITE = 2000;
+    static const int PRUNING_FREQUENCY = 10;  // Every 10 sites pruning one time
+    static const int BENEFIT_THRESHOLD = 3;   // 收益差距閾值
     
     /**
-     * @brief Initialize the DAG with a source node
-     * @return Source node for the DAG
+     * @brief Create initial DAG source node
      */
-    DPNode* initializeDAG();
+    DPNode *createSourceNode();
+
+    Cell *getNextCellToPlace(int row, int s_j, const std::vector<Cell *> &row_cells);
+
+    Cell *getLastPlacedCell(int row, int s_j, const std::vector<Cell *> &row_cells);
+
+    /**
+     * @brief Process nodes at current site and generate extensions
+     */
+    void processNodesAtSite(int site,
+                           const std::vector<std::vector<Cell*>>& cells_in_rows,
+                           const std::vector<Staple>& prev_staples,
+                           int row_start);
+
+    void pruneNodes(int current_site);
+
+    /**
+     * @brief Generate extensions from a node using binary decision tree
+     * 
+     * Following Section 3.1: up to 8 extensions (2^3) based on place/defer decisions
+     */
+    void generateExtensions(DPNode* node,
+                           const std::vector<std::vector<Cell*>>& cells_in_rows,
+                           const std::vector<Staple>& prev_staples,
+                           int row_start);
     
     /**
-     * @brief Process all nodes at a given site
-     * @param site Current site
-     * @param cells_in_rows Cells in each row
-     * @param prev_staples Staples from previous rounds
-     * @param row_start Global start row index
+     * @brief Check if we can defer placing the next cell beyond site i+1
      */
-    void processSite(int site,
-                     const std::vector<std::vector<Cell*>>& cells_in_rows,
-                     const std::vector<Staple>& prev_staples,
-                     int row_start);
+    bool canDeferNextCell(int row, int s_j, int l_j, int site,
+                         const std::vector<Cell*>& row_cells);
     
     /**
-     * @brief Generate all valid extensions for a node
-     * @param node Current node
-     * @param site Current site
-     * @param cells_in_rows Cells in each row
-     * @param row_start Global start row index
-     * @return Vector of valid extensions
+     * @brief Check if we can place the next cell at site i+1
      */
-    std::vector<Extension> generateExtensions(
-        DPNode* node, 
-        int site,
-        const std::vector<std::vector<Cell*>>& cells_in_rows,
-        int row_start);
+    bool canPlaceNextCell(int row, int s_j, int l_j, int site,
+                         const std::vector<Cell*>& row_cells);
     
     /**
-     * @brief Check if a staple can be inserted at a given site
-     * @param site Site index
-     * @param row Row index (0-based within triple-row problem)
-     * @param cells_in_rows Cells in each row
-     * @param node Current node
-     * @return true if staple can be inserted, false otherwise
+     * @brief Create or find node with given state
      */
-    bool canInsertStaple(int site, 
-                         int row, 
-                         const std::vector<std::vector<Cell*>>& cells_in_rows,
-                         DPNode* node);
+    DPNode* createOrFindNode(DPNode* node, const std::vector<std::vector<Cell*>>& cells_in_rows, int site, int s1, int l1, int s2, int l2, 
+                            int s3, int l3);
     
     /**
-     * @brief Check for staggering violations
-     * @param site Site index
-     * @param staple_case Current staple insertion case
-     * @param prev_case Previous staple insertion case
-     * @param prev_staples Staples from previous rounds
-     * @param row_start Global start row index
-     * @return true if staggering violation exists, false otherwise
+     * @brief Update benefit for target node based on source node
      */
-    bool hasStaggeringViolation(int site,
-                               int staple_case,
-                               int prev_case,
-                               const std::vector<Staple>& prev_staples,
-                               int row_start);
-    
-    /**
-     * @brief Get or create a node with given state
-     * @param state Compact state encoding
-     * @return Pointer to new or existing node
-     */
-    DPNode* getOrCreateNode(const CompactState& state);
-    
-    /**
-     * @brief Update node benefit based on extension
-     * @param from_node Source node
-     * @param to_node Target node
-     * @param site Current site
-     * @param extension Current extension
-     * @param prev_staples Staples from previous rounds
-     * @param row_start Global start row index
-     * @param cells_in_rows Cells in each row
-     */
-    void updateBenefit(DPNode* from_node,
-                      DPNode* to_node,
-                      int site,
-                      const Extension& extension,
+    void updateBenefit(DPNode* source, DPNode* target,
+                      const std::vector<std::vector<Cell*>>& cells_in_rows,
                       const std::vector<Staple>& prev_staples,
-                      int row_start,
-                      const std::vector<std::vector<Cell*>>& cells_in_rows);
+                      int row_start);
     
     /**
-     * @brief Backtrack to get the optimal solution
-     * @param cells_in_rows Cells in each row
-     * @param row_start Global start row index
-     * @return Vector of inserted staples
+     * @brief Check if a staple can be inserted (no pin obstruction)
      */
-    std::vector<Staple> backtrack(
-        const std::vector<std::vector<Cell*>>& cells_in_rows,
-        int row_start);
-
-    void pruneNodes(int site);
-
-    std::vector<Staple> solveTripleRowWithWindows(const std::vector<std::vector<Cell *>> &cells_in_rows, int row_start, const std::vector<Staple> &prev_staples);
-
-    std::vector<Staple> solveTripleRowWindow(const std::vector<std::vector<Cell *>> &window_cells, int row_start, const std::vector<Staple> &window_prev_staples, int window_start, int window_end);
-
-    /**
-     * @brief Apply final cell placement updates
-     * @param cells_in_rows Cells in each row
-     */
-    void applyPlacementUpdates(
-        const std::vector<std::vector<Cell*>>& cells_in_rows);
+    bool canInsertStaple(int site, int between_rows, 
+                        int s[3], int l[3],
+                        const std::vector<std::vector<Cell*>>& cells_in_rows);
     
     /**
-     * @brief Check if cell placement is valid
-     * @param cell Cell to check
-     * @param x X-coordinate
-     * @param y Y-coordinate
-     * @param is_flipped Whether cell is flipped
-     * @return true if placement is valid, false otherwise
+     * @brief Check for anti-parallel line-ends violation
      */
-    bool isValidPlacement(const Cell* cell, int x, int y, bool is_flipped);
+    bool hasAntiParallelViolation(int site, int staple_case, int prev_case,
+                                 const std::vector<Staple>& prev_staples,
+                                 int row_start);
     
     /**
-     * @brief Get compact state encoding
-     * @param site Current site
-     * @param s1,l1,f1 Row 1 cell state (index, distance, flip)
-     * @param s2,l2,f2 Row 2 cell state
-     * @param s3,l3,f3 Row 3 cell state
-     * @param cells_in_rows Cells in each row
-     * @return Compact state encoding
+     * @brief Determine which of the 5 staple cases are valid at this site
      */
-    CompactState getCompactState(
-        int site,
-        int s1, int l1, bool f1,
-        int s2, int l2, bool f2,
-        int s3, int l3, bool f3,
-        const std::vector<std::vector<Cell*>>& cells_in_rows);
+    std::vector<int> getValidStapleCases(int site, int s[3], int l[3],
+                                       const std::vector<std::vector<Cell*>>& cells_in_rows);
+    
+    /**
+     * @brief Calculate staple benefit with balance factor
+     */
+    int calculateStapleBenefit(int staple_case, int vdd_count, int vss_count,
+                              int row_start);
     
     /**
      * @brief Check if row is VDD or VSS
-     * @param row_idx Row index
-     * @return true if VDD row, false if VSS row
      */
     bool isVDDRow(int row_idx) const;
     
     /**
-     * @brief Calculate staple benefit with balance constraints
-     * @param staple_case Staple insertion case
-     * @param current_vdd Current VDD staple count
-     * @param current_vss Current VSS staple count
-     * @param row_start Global start row index
-     * @return Adjusted benefit value
+     * @brief Backtrack from best node to recover solution
      */
-    double calculateStapleBenefit(
-        int staple_case,
-        int current_vdd,
-        int current_vss,
+    std::vector<Staple> backtrackSolution(
+        const std::vector<std::vector<Cell*>>& cells_in_rows,
         int row_start);
     
+    /**
+     * @brief Apply cell placement updates from backtracking
+     */
+    void applyCellPlacements(const std::vector<std::vector<Cell*>>& cells_in_rows);
+
     /**
      * @brief Clean up allocated memory
      */
     void cleanup();
-
+    
     /**
-     * @brief Monitor memory usage and report statistics
+     * @brief Get initial s values for compact encoding
      */
-    void monitorMemoryUsage();
+    void computeInitialS(const std::vector<std::vector<Cell*>>& cells_in_rows);
+};
 
-    bool shouldApplyBalanceFactor(int current_vdd, int current_vss, int row_start, 
-                             bool can_insert_r1_r2, bool can_insert_r2_r3);
-    void applyStapleBalanceAdjustment(int& benefit, int vdd_count, int vss_count, 
-                                 int staple_case, int row_start);
-
-    bool isPromisingSolution(const CompactState &state);
-
-    std::vector<std::vector<Cell *>> extractCellsForWindow(const std::vector<std::vector<Cell *>> &cells_in_rows, int window_start, int window_end);
-
-    std::vector<Staple> extractStaplesForWindow(const std::vector<Staple> &staples, int window_start, int window_end);
-
-    void releaseNodesBeforeSite(int site);
+class StuckDetector {
+private:
+    std::chrono::high_resolution_clock::time_point last_progress_time;
+    int last_site_processed;
+    static const int STUCK_TIMEOUT_SECONDS = 30;  // 30秒沒進展視為stuck
+    
+public:
+    StuckDetector() {
+        reset();
+    }
+    
+    void reset() {
+        last_progress_time = std::chrono::high_resolution_clock::now();
+        last_site_processed = -1;
+    }
+    
+    void updateProgress(int current_site) {
+        if (current_site > last_site_processed) {
+            last_progress_time = std::chrono::high_resolution_clock::now();
+            last_site_processed = current_site;
+        }
+    }
+    
+    bool isStuck() {
+        auto now = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_progress_time);
+        return duration.count() > STUCK_TIMEOUT_SECONDS;
+    }
+    
+    int getStuckDuration() {
+        auto now = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_progress_time);
+        return duration.count();
+    }
 };
 
 #endif // DP_SOLVER_HPP

@@ -24,8 +24,8 @@ public:
     enum LogLevel {
         ERROR = 0,
         WARNING = 1,
-        DEBUG = 2,
-        INFO = 3,
+        INFO = 2,
+        DEBUG = 3,
         TRACE = 4
     };
 
@@ -95,9 +95,9 @@ public:
                     << indentation << message << std::endl;
             
             // Also print critical messages to console
-            if (level <= WARNING) {
-                std::cout << "LOG: " << levelStr << " | " << message << std::endl;
-            }
+            // if (level <= WARNING) {
+            //     std::cout << "LOG: " << levelStr << " | " << message << std::endl;
+            // }
         }
     }
     

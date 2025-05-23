@@ -158,42 +158,27 @@ struct TripleRowState {
     TripleRowState(int start, int end) : row_start(start), row_end(end) {}
 };
 
+
 /**
- * @brief Compact state encoding for memory efficiency
+ * @brief Compact state for memory-efficient node lookup
  * 
- * This uses a relative encoding to reduce state space and memory usage
+ * Uses the compact encoding (i, a1, b1, a2, b2, a3, b3) from the paper
  */
 struct CompactState {
-    int site;               // Current site
+    int site;
+    int a[3];  // Cell offset from initial placement
+    int b[3];  // Distance values (l values)
     
-    // For each row (3 rows)
-    int cell_offset[3];     // Relative cell index from initial placement
-    int displacement[3];    // Displacement from initial position
-    bool is_flipped[3];     // Cell flipping status
-    
-    // Constructor
-    CompactState() : site(0) {
-        for (int i = 0; i < 3; i++) {
-            cell_offset[i] = 0;
-            displacement[i] = 0;
-            is_flipped[i] = false;
-        }
-    }
-    
-    // Compare operator for map/set
     bool operator==(const CompactState& other) const {
         if (site != other.site) return false;
-        
         for (int i = 0; i < 3; i++) {
-            if (cell_offset[i] != other.cell_offset[i] ||
-                displacement[i] != other.displacement[i] ||
-                is_flipped[i] != other.is_flipped[i])
-                return false;
+            if (a[i] != other.a[i] || b[i] != other.b[i]) return false;
         }
-        
         return true;
     }
 };
+
+
 
 /**
  * @brief Hash function for CompactState
@@ -201,55 +186,75 @@ struct CompactState {
 struct CompactStateHasher {
     std::size_t operator()(const CompactState& state) const {
         std::size_t hash = std::hash<int>()(state.site);
-        
         for (int i = 0; i < 3; i++) {
-            hash ^= std::hash<int>()(state.cell_offset[i]) << (i * 10);
-            hash ^= std::hash<int>()(state.displacement[i]) << (i * 10 + 3);
-            hash ^= std::hash<bool>()(state.is_flipped[i]) << (i * 10 + 6);
+            hash ^= std::hash<int>()(state.a[i]) << ((i * 2 + 1) * 4);
+            hash ^= std::hash<int>()(state.b[i]) << ((i * 2 + 2) * 4);
         }
-        
         return hash;
     }
 };
 
 /**
- * @brief Staple insertion cases as defined in the paper
+ * @brief Five staple insertion cases from the paper (Figure 7)
  */
 enum StapleCase {
-    NO_STAPLE = 0,        // Case 1: No staple inserted
-    R1_R2_STAPLE = 1,     // Case 2: Staple between R1 and R2
-    R2_R3_STAPLE = 2,     // Case 3: Staple between R2 and R3
-    BOTH_STAPLES = 3,     // Case 4: Both staples (R1-R2 and R2-R3)
-    SPECIAL_CASE = 4      // Case 5: Special configurations
+    CASE_1_NO_STAPLE = 0,      // No staple inserted
+    CASE_2_R1_R2 = 1,          // Staple between R1 and R2
+    CASE_3_R2_R3 = 2,          // Staple between R2 and R3  
+    CASE_4_BOTH = 3,           // Both R1-R2 and R2-R3 staples
+    CASE_5_SPECIAL = 4         // Special configuration
 };
 
 /**
- * @brief DAG node for dynamic programming
+ * @brief DAG node for dynamic programming with five staple cases
+ * 
+ * According to the paper, each node tracks five possible staple insertion scenarios
  */
 struct DPNode {
-    CompactState state;     // Current state
+    // Node key: (i, s1, l1, s2, l2, s3, l3)
+    int site;           // Current site i
+    int s[3];          // Last placed cell index in each row
+    int l[3];          // Distance from site to cell's left boundary
     
-    // Five staple insertion scenarios
+    // Five staple insertion cases as per Figure 7 in the paper
     static const int NUM_CASES = 5;
-    int benefit[NUM_CASES];        // Max accumulated staple benefit
-    DPNode* prev_node[NUM_CASES];  // Previous node pointer
-    int prev_case[NUM_CASES];      // Case in previous node
     
-    // For staple balance constraint
-    int vdd_staples[NUM_CASES];     // VDD staple count
-    int vss_staples[NUM_CASES];     // VSS staple count
+    // For each case, track:
+    int benefit[NUM_CASES];         // Maximum accumulated staple benefit
+    DPNode* prev_node[NUM_CASES];   // Previous node pointer
+    int prev_case[NUM_CASES];       // Case in previous node
+    
+    // Staple balance tracking
+    int vdd_staples[NUM_CASES];
+    int vss_staples[NUM_CASES];
     
     // Constructor
-    DPNode(const CompactState& s) : state(s) {
-        for (int i = 0; i < NUM_CASES; i++) {
-            benefit[i] = (i == NO_STAPLE) ? 0 : -1000000; // Initialize case 0 with 0, others with large negative
-            prev_node[i] = nullptr;
-            prev_case[i] = -1;
-            vdd_staples[i] = 0;
-            vss_staples[i] = 0;
+    DPNode(int i, int s1, int l1, int s2, int l2, int s3, int l3) 
+        : site(i) {
+        s[0] = s1; s[1] = s2; s[2] = s3;
+        l[0] = l1; l[1] = l2; l[2] = l3;
+        
+        for (int c = 0; c < NUM_CASES; c++) {
+            benefit[c] = (c == 0) ? 0 : -1000000; // Case 1 (no staple) starts at 0
+            prev_node[c] = nullptr;
+            prev_case[c] = -1;
+            vdd_staples[c] = 0;
+            vss_staples[c] = 0;
         }
     }
+    
+    // Get compact encoding as described in Section 3.1 of the paper
+    void getCompactEncoding(int initial_s[3], int& a1, int& b1, 
+                           int& a2, int& b2, int& a3, int& b3) const {
+        a1 = s[0] - initial_s[0];
+        a2 = s[1] - initial_s[1];
+        a3 = s[2] - initial_s[2];
+        b1 = l[0];
+        b2 = l[1];
+        b3 = l[2];
+    }
 };
+
 
 /**
  * @brief Extension object representing a way to extend a partial solution
