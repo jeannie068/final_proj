@@ -8,6 +8,7 @@
 #include "../memory_usage.hpp"
 #include <algorithm>
 #include <limits>
+#include <thread>
 
 /**
  * @brief Constructor
@@ -32,7 +33,7 @@ DPSolver::~DPSolver() {
 }
 
 /**
- * @brief Main solver function implementing MATRO algorithm
+ * @brief Robust solver for triple-row optimization with timeout protection and fallback
  */
 std::vector<Staple> DPSolver::solveTripleRow(
     const std::vector<std::vector<Cell*>>& cells_in_rows,
@@ -41,102 +42,191 @@ std::vector<Staple> DPSolver::solveTripleRow(
     
     auto start_time = std::chrono::high_resolution_clock::now();
     size_t start_memory = getCurrentMemoryUsage();
-
+    
+    // === INITIALIZATION PHASE ===
+    std::cout << "=== STARTING TRIPLE-ROW " << row_start << "-" << (row_start+2) 
+              << " (Memory: " << start_memory << "MB) ===" << std::endl;
+    
     Logger::log(Logger::INFO, "Starting triple-row optimization for rows " + 
-            std::to_string(row_start) + "-" + std::to_string(row_start + 2));
-    Logger::log(Logger::INFO, "Memory usage at start: " + std::to_string(start_memory) + " MB");
-    Logger::log(Logger::INFO, "Previous staples count: " + std::to_string(prev_staples.size()));
-
-    // Clear previous run data
-    cleanup();
-
-    // Initialize stuck detector
-    StuckDetector stuck_detector;
-
-    // Compute initial s values for compact encoding
-    computeInitialS(cells_in_rows);
-
-    // Create source node
-    DPNode* source = createSourceNode();
-    node_queue.push(source);
-    all_nodes.push_back(source);
-    nodes_created = 1;
-    Logger::log(Logger::INFO, "Processing sites from 0 to " + std::to_string(chip_info.total_sites));
+                std::to_string(row_start) + "-" + std::to_string(row_start + 2));
+    Logger::log(Logger::INFO, "Memory at start: " + std::to_string(start_memory) + " MB");
+    Logger::log(Logger::INFO, "Previous staples: " + std::to_string(prev_staples.size()));
     
-    Logger::log(Logger::INFO, "  Cells in rows: " + std::to_string(cells_in_rows[0].size()) + 
-                ", " + std::to_string(cells_in_rows[1].size()) + 
-                ", " + std::to_string(cells_in_rows[2].size()));
+    // 強制完全清理 - 確保clean state
+    forceCompleteCleanup();
     
-    best_final_node = nullptr;
-    best_final_case = -1;
+    // 設定timeout - 每個subproblem最多2分鐘
+    const int MAX_SUBPROBLEM_TIME_SECONDS = 120;
+    const int PROGRESS_REPORT_INTERVAL = 20; // 每20個sites報告一次
     
+    // Initialize tracking variables
+    bool timeout_occurred = false;
+    bool algorithm_stuck = false;
+    int last_reported_site = -1;
+    size_t max_memory_this_run = start_memory;
     
-    
-    // Process sites from left to right
-    for (int site = 0; site <= chip_info.total_sites; site++) {
-        size_t nodes_at_site = node_queue.size();
-        Logger::log(Logger::INFO, "Processing site " + std::to_string(site) + 
-                    " with " + std::to_string(nodes_at_site) + " nodes");
+    try {
+        // === SETUP PHASE ===
+        computeInitialS(cells_in_rows);
         
-        if (nodes_at_site == 0) {
-            // No nodes to process at this site - this is normal for early sites
-            continue;
+        // Log cell information
+        for (int row = 0; row < 3; row++) {
+            std::cout << "Row " << (row_start + row) << ": " << cells_in_rows[row].size() 
+                      << " cells" << std::endl;
+            Logger::log(Logger::INFO, "Row " + std::to_string(row_start + row) + 
+                        ": " + std::to_string(cells_in_rows[row].size()) + " cells");
         }
         
-        Logger::log(Logger::INFO, "Processing site " + std::to_string(site) + 
-                    " with " + std::to_string(nodes_at_site) + " nodes");
+        // Create source node
+        DPNode* source = createSourceNode();
+        node_queue.push(source);
+        all_nodes.push_back(source);
+        nodes_created = 1;
         
-        // Process all nodes at current site
-        processNodesAtSite(site, cells_in_rows, prev_staples, row_start);
+        best_final_node = nullptr;
+        best_final_case = -1;
         
-        // Update memory tracking
-        max_nodes_in_memory = std::max(max_nodes_in_memory, all_nodes.size());
+        std::cout << "Processing sites 0-" << chip_info.total_sites << "..." << std::endl;
         
-        // // Periodic logging
-        // if (site % 100 == 0 || site == chip_info.total_sites) {
-        //     Logger::log(Logger::INFO, "Progress: site " + std::to_string(site) + "/" + 
-        //                 std::to_string(chip_info.total_sites) + 
-        //                 ", nodes created: " + std::to_string(nodes_created));
-        // }
-    }
-    
-    // Find best final node and case
-    int max_benefit = -1000000;
-    for (DPNode* node : all_nodes) {
-        if (node->site == chip_info.total_sites) {
-            for (int c = 0; c < DPNode::NUM_CASES; c++) {
-                if (node->benefit[c] > max_benefit) {
-                    max_benefit = node->benefit[c];
-                    best_final_node = node;
-                    best_final_case = c;
+        // === MAIN PROCESSING LOOP ===
+        for (int site = 0; site <= chip_info.total_sites; site++) {
+            // === TIMEOUT CHECK ===
+            auto current_time = std::chrono::high_resolution_clock::now();
+            auto elapsed_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                current_time - start_time).count();
+            
+            if (elapsed_seconds > MAX_SUBPROBLEM_TIME_SECONDS) {
+                timeout_occurred = true;
+                std::cout << "TIMEOUT: Subproblem exceeded " << MAX_SUBPROBLEM_TIME_SECONDS 
+                          << "s at site " << site << std::endl;
+                Logger::log(Logger::ERROR, "TIMEOUT at site " + std::to_string(site) + 
+                           " after " + std::to_string(elapsed_seconds) + " seconds");
+                break;
+            }
+            
+            // === PROGRESS REPORTING ===
+            if (site % PROGRESS_REPORT_INTERVAL == 0 || site == chip_info.total_sites) {
+                size_t current_memory = getCurrentMemoryUsage();
+                max_memory_this_run = std::max(max_memory_this_run, current_memory);
+                
+                size_t queue_size = node_queue.size();
+                std::cout << "Site " << site << "/" << chip_info.total_sites 
+                          << " (" << queue_size << " nodes, " << current_memory 
+                          << "MB, " << elapsed_seconds << "s)" << std::endl;
+                
+                Logger::log(Logger::INFO, "Progress: site " + std::to_string(site) + 
+                           ", nodes: " + std::to_string(queue_size) + 
+                           ", memory: " + std::to_string(current_memory) + "MB");
+                
+                last_reported_site = site;
+            }
+            
+            // === PROCESS CURRENT SITE ===
+            size_t nodes_at_site = node_queue.size();
+            
+            if (nodes_at_site == 0) {
+                // No nodes to process - check if we're stuck
+                if (site > 50) { // Only worry if we're well into the process
+                    algorithm_stuck = true;
+                    std::cout << "STUCK: No nodes at site " << site << std::endl;
+                    Logger::log(Logger::ERROR, "Algorithm stuck at site " + std::to_string(site));
+                    break;
+                }
+                continue; // Early sites might naturally have no nodes
+            }
+            
+            // === MEMORY PROTECTION ===
+            size_t current_memory = getCurrentMemoryUsage();
+            if (current_memory > start_memory + 1000) { // More than 1GB increase
+                std::cout << "MEMORY WARNING: Usage increased by " 
+                          << (current_memory - start_memory) << "MB" << std::endl;
+                Logger::log(Logger::WARNING, "High memory usage: " + std::to_string(current_memory) + "MB");
+                
+                // Force aggressive pruning
+                if (all_nodes.size() > 1000) {
+                    aggressivePruning(site);
                 }
             }
+            
+            // Process nodes at this site with timeout per site
+            auto site_start = std::chrono::high_resolution_clock::now();
+            processNodesAtSiteWithTimeout(site, cells_in_rows, prev_staples, row_start, 10); // 10s per site max
+            auto site_end = std::chrono::high_resolution_clock::now();
+            
+            auto site_duration = std::chrono::duration_cast<std::chrono::seconds>(site_end - site_start);
+            if (site_duration.count() > 5) {
+                Logger::log(Logger::WARNING, "Site " + std::to_string(site) + 
+                           " took " + std::to_string(site_duration.count()) + " seconds");
+            }
+            
+            // Update memory tracking
+            max_nodes_in_memory = std::max(max_nodes_in_memory, all_nodes.size());
         }
-    }
-    
-    // Backtrack to get solution
-    std::vector<Staple> solution;
-    if (best_final_node != nullptr) {
-        Logger::log(Logger::INFO, "Best solution found with benefit: " + 
-                    std::to_string(max_benefit));
-        solution = backtrackSolution(cells_in_rows, row_start);
+        
+        // === SOLUTION EXTRACTION ===
+        std::vector<Staple> solution;
+        
+        if (timeout_occurred || algorithm_stuck) {
+            std::cout << "Using fallback solution generation..." << std::endl;
+            solution = generateFallbackSolution(cells_in_rows, row_start, prev_staples);
+        } else {
+            // Normal solution extraction
+            solution = extractOptimalSolution(cells_in_rows, row_start);
+        }
+        
+        // === FINAL REPORTING ===
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto total_duration = std::chrono::duration_cast<std::chrono::seconds>(
+            end_time - start_time);
+        
+        size_t end_memory = getCurrentMemoryUsage();
+        
+        std::cout << "=== TRIPLE-ROW " << row_start << "-" << (row_start+2) 
+                  << " COMPLETED ===" << std::endl;
+        std::cout << "Time: " << total_duration.count() << "s, "
+                  << "Memory: " << start_memory << "->" << end_memory << "MB, "
+                  << "Staples: " << solution.size() << std::endl;
+        
+        Logger::log(Logger::INFO, "Triple-row " + std::to_string(row_start) + "-" + 
+                   std::to_string(row_start+2) + " completed:");
+        Logger::log(Logger::INFO, "  Duration: " + std::to_string(total_duration.count()) + "s");
+        Logger::log(Logger::INFO, "  Memory: " + std::to_string(start_memory) + " -> " + 
+                   std::to_string(end_memory) + " MB");
+        Logger::log(Logger::INFO, "  Peak memory: " + std::to_string(max_memory_this_run) + "MB");
+        Logger::log(Logger::INFO, "  Staples: " + std::to_string(solution.size()));
+        Logger::log(Logger::INFO, "  Nodes created: " + std::to_string(nodes_created));
+        Logger::log(Logger::INFO, "  Max nodes in memory: " + std::to_string(max_nodes_in_memory));
+        
+        if (timeout_occurred) {
+            Logger::log(Logger::WARNING, "  TIMEOUT occurred");
+        }
+        if (algorithm_stuck) {
+            Logger::log(Logger::WARNING, "  ALGORITHM STUCK");
+        }
+        
+        // Apply cell placements (if any)
         applyCellPlacements(cells_in_rows);
-    } else {
-        Logger::log(Logger::WARNING, "No valid solution found!");
+        
+        return solution;
+        
+    } catch (const std::exception& e) {
+        std::cout << "EXCEPTION in triple-row solver: " << e.what() << std::endl;
+        Logger::log(Logger::ERROR, "Exception in solveTripleRow: " + std::string(e.what()));
+        
+        // Force cleanup and return fallback solution
+        forceCompleteCleanup();
+        return generateFallbackSolution(cells_in_rows, row_start, prev_staples);
+        
+    } catch (...) {
+        std::cout << "UNKNOWN EXCEPTION in triple-row solver" << std::endl;
+        Logger::log(Logger::ERROR, "Unknown exception in solveTripleRow");
+        
+        // Force cleanup and return fallback solution
+        forceCompleteCleanup();
+        return generateFallbackSolution(cells_in_rows, row_start, prev_staples);
     }
-    
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        end_time - start_time);
-    
-    Logger::log(Logger::INFO, "Triple-row optimization completed in " + 
-                std::to_string(duration.count()) + " ms");
-    Logger::log(Logger::INFO, "  Staples inserted: " + std::to_string(solution.size()));
-    Logger::log(Logger::INFO, "  Nodes created: " + std::to_string(nodes_created));
-    Logger::log(Logger::INFO, "  Max nodes in memory: " + std::to_string(max_nodes_in_memory));
-    
-    return solution;
 }
+
 
 /**
  * @brief Create initial source node
@@ -667,280 +757,4 @@ bool DPSolver::canInsertStaple(int site, int between_rows,
     if (s[row2] > 0 && s[row2] <= static_cast<int>(cells_in_rows[row2].size())) {
         Cell* cell = cells_in_rows[row2][s[row2] - 1];
         const CellType& cell_type = cell_types[cell->type_index];
-        int cell_width_in_sites = cell_type.width / chip_info.site_width;
-        
-        if (l[row2] < cell_width_in_sites) {
-            int site_in_cell = cell_width_in_sites - l[row2];
-            if (site_in_cell >= 0 && site_in_cell < cell_width_in_sites) {
-                if (cell_type.hasPinAt(site_in_cell, cell->is_flipped)) {
-                    return false;
-                }
-            }
-        }
-    }
-    
-    return true;
-}
-
-/**
- * @brief Get valid staple cases at current site
- */
-std::vector<int> DPSolver::getValidStapleCases(int site, int s[3], int l[3],
-                                              const std::vector<std::vector<Cell*>>& cells_in_rows) {
-    std::vector<int> valid_cases;
-    
-    // Case 1: No staple (always valid)
-    valid_cases.push_back(CASE_1_NO_STAPLE);
-    
-    // Case 2: R1-R2 staple
-    if (canInsertStaple(site, 0, s, l, cells_in_rows)) {
-        valid_cases.push_back(CASE_2_R1_R2);
-    }
-    
-    // Case 3: R2-R3 staple
-    if (canInsertStaple(site, 1, s, l, cells_in_rows)) {
-        valid_cases.push_back(CASE_3_R2_R3);
-    }
-    
-    // Case 4: Both staples
-    if (canInsertStaple(site, 0, s, l, cells_in_rows) &&
-        canInsertStaple(site, 1, s, l, cells_in_rows)) {
-        valid_cases.push_back(CASE_4_BOTH);
-    }
-    
-    // Case 5: Special configuration (requires specific conditions)
-    // This would depend on the specific implementation requirements
-    
-    return valid_cases;
-}
-
-/**
- * @brief Check for anti-parallel line-ends violation
- */
-bool DPSolver::hasAntiParallelViolation(int site, int staple_case, int prev_case,
-                                       const std::vector<Staple>& prev_staples,
-                                       int row_start) {
-    // Check violations within current three rows (as shown in Figure 8 of paper)
-    
-    // Case-specific checks based on the paper
-    if (staple_case == CASE_2_R1_R2 && prev_case == CASE_3_R2_R3) {
-        // Potential staggering pattern
-        return true;
-    }
-    
-    if (staple_case == CASE_3_R2_R3 && prev_case == CASE_2_R1_R2) {
-        // Potential staggering pattern
-        return true;
-    }
-    
-    // Check violations with previous round staples (Figure 9 in paper)
-    int site_x = site * chip_info.site_width;
-    
-    for (const Staple& prev_staple : prev_staples) {
-        // Check if previous staple creates anti-parallel line-ends
-        if (std::abs(prev_staple.x - site_x) == chip_info.site_width) {
-            // Adjacent sites, check for violation
-            int prev_row = prev_staple.y / chip_info.row_height;
-            
-            if (staple_case == CASE_2_R1_R2 && prev_row == row_start - 1) {
-                return true;
-            }
-            
-            if (staple_case == CASE_3_R2_R3 && prev_row == row_start + 3) {
-                return true;
-            }
-        }
-    }
-    
-    return false;
-}
-
-/**
- * @brief Calculate staple benefit with balance factor
- */
-int DPSolver::calculateStapleBenefit(int staple_case, int vdd_count, int vss_count,
-                                   int row_start) {
-    int base_benefit = 0;
-    
-    switch (staple_case) {
-        case CASE_1_NO_STAPLE:
-            base_benefit = 0;
-            break;
-        case CASE_2_R1_R2:
-        case CASE_3_R2_R3:
-            base_benefit = 100;
-            break;
-        case CASE_4_BOTH:
-            base_benefit = 200;
-            break;
-        case CASE_5_SPECIAL:
-            base_benefit = 150;
-            break;
-    }
-    
-    // Apply balance factor as described in Section 2 of the paper
-    if (vdd_count > 0 && vss_count > 0) {
-        double ratio = static_cast<double>(std::max(vdd_count, vss_count)) / 
-                      std::min(vdd_count, vss_count);
-        
-        if (ratio > 1.1) {
-            // Apply balance penalty/bonus
-            if ((vdd_count > vss_count && staple_case == CASE_3_R2_R3 && !isVDDRow(row_start + 1)) ||
-                (vss_count > vdd_count && staple_case == CASE_2_R1_R2 && isVDDRow(row_start))) {
-                // This staple helps balance
-                base_benefit += static_cast<int>(params.balance_factor * 100);
-            }
-        }
-    }
-    
-    return base_benefit;
-}
-
-/**
- * @brief Check if row is VDD or VSS
- */
-bool DPSolver::isVDDRow(int row_idx) const {
-    // Even rows are VDD, odd rows are VSS
-    return (row_idx % 2 == 0);
-}
-
-/**
- * @brief Backtrack from best node to recover solution
- */
-std::vector<Staple> DPSolver::backtrackSolution(
-    const std::vector<std::vector<Cell*>>& cells_in_rows,
-    int row_start) {
-    
-    std::vector<Staple> solution;
-    
-    if (!best_final_node || best_final_case < 0) {
-        Logger::log(Logger::WARNING, "No valid solution to backtrack");
-        return solution;
-    }
-    
-    Logger::log(Logger::INFO, "Backtracking from final node with case " + 
-                std::to_string(best_final_case));
-    
-    // Trace back through the DAG
-    DPNode* current = best_final_node;
-    int current_case = best_final_case;
-    
-    while (current != nullptr && current->prev_node[current_case] != nullptr) {
-        // Insert staples based on the case
-        int site_x = current->site * chip_info.site_width;
-        
-        switch (current_case) {
-            case CASE_2_R1_R2: {
-                int y = chip_info.getRowY(row_start + 1);
-                solution.push_back(Staple(site_x, y, isVDDRow(row_start)));
-                break;
-            }
-            
-            case CASE_3_R2_R3: {
-                int y = chip_info.getRowY(row_start + 2);
-                solution.push_back(Staple(site_x, y, isVDDRow(row_start + 1)));
-                break;
-            }
-            
-            case CASE_4_BOTH: {
-                int y1 = chip_info.getRowY(row_start + 1);
-                int y2 = chip_info.getRowY(row_start + 2);
-                solution.push_back(Staple(site_x, y1, isVDDRow(row_start)));
-                solution.push_back(Staple(site_x, y2, isVDDRow(row_start + 1)));
-                break;
-            }
-            
-            case CASE_5_SPECIAL:
-                // Handle special configuration
-                break;
-        }
-        
-        // Move to previous node
-        DPNode* prev = current->prev_node[current_case];
-        int prev_case = current->prev_case[current_case];
-        current = prev;
-        current_case = prev_case;
-    }
-    
-    // Reverse to get correct order
-    std::reverse(solution.begin(), solution.end());
-    
-    Logger::log(Logger::INFO, "Backtracking complete, " + 
-                std::to_string(solution.size()) + " staples inserted");
-    
-    return solution;
-}
-
-/**
- * @brief Apply cell placement updates from backtracking
- */
-void DPSolver::applyCellPlacements(const std::vector<std::vector<Cell*>>& cells_in_rows) {
-    // This would update the current_x positions of cells based on the final placement
-    // For now, keeping cells at their initial positions
-    // Cell flipping would be handled as a post-processing step
-    
-    Logger::log(Logger::INFO, "Cell placement updates applied");
-}
-
-/**
- * @brief Compute initial s values for compact encoding
- */
-void DPSolver::computeInitialS(const std::vector<std::vector<Cell*>>& cells_in_rows) {
-    Logger::log(Logger::DEBUG, "Computing initial s values...");
-    // For each row, find cells that cross or are to the left of site 0
-    for (int row = 0; row < 3; row++) {
-        initial_s[row] = 0;  // Initial no cell be processed
-        
-        Logger::log(Logger::DEBUG, "Row " + std::to_string(row) + ":");
-        Logger::log(Logger::DEBUG, "  Total cells: " + std::to_string(cells_in_rows[row].size()));
-        
-        if (!cells_in_rows[row].empty()) {
-            Cell* first_cell = cells_in_rows[row][0];
-            int first_site = first_cell->initial_x / chip_info.site_width;
-            Logger::log(Logger::DEBUG, "  First cell at site: " + std::to_string(first_site));
-        }
-        
-        Logger::log(Logger::DEBUG, "  Initial s[" + std::to_string(row) + "] = " + std::to_string(initial_s[row]));
-    }
-}
-
-
-
-/**
- * @brief Clean up allocated memory
- */
-void DPSolver::cleanup() {
-    Logger::log(Logger::DEBUG, "Starting DPSolver cleanup");
-    
-    size_t initial_nodes = all_nodes.size();
-    size_t initial_lookup = node_lookup.size();
-    
-    // 清理所有節點
-    for (DPNode* node : all_nodes) {
-        if (node != nullptr) {
-            delete node;
-        }
-    }
-    all_nodes.clear();
-    node_lookup.clear();
-    
-    // 清理隊列
-    while (!node_queue.empty()) {
-        node_queue.pop();
-    }
-    
-    // Reset所有狀態變數
-    nodes_created = 0;
-    max_nodes_in_memory = 0;
-    best_final_node = nullptr;
-    best_final_case = -1;
-    
-    // Reset initial_s values
-    for (int i = 0; i < 3; i++) {
-        initial_s[i] = 0;
-    }
-    
-    Logger::log(Logger::DEBUG, "DPSolver cleanup completed: deleted " + 
-               std::to_string(initial_nodes) + " nodes, " + 
-               std::to_string(initial_lookup) + " lookup entries");
-}
+      

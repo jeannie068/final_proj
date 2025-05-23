@@ -154,6 +154,9 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
     // 解決這個triple-row subproblem
     std::vector<Staple> new_staples_this_round = dp_solver.solveTripleRow(
         cells_in_rows, row_start, prev_staples);
+
+    // std::vector<Staple> new_staples_this_round = dp_solver.solveTripleRowMinimal(
+    //    cells_in_rows, row_start, prev_staples);
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(

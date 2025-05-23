@@ -38,6 +38,11 @@ public:
         const std::vector<std::vector<Cell*>>& cells_in_rows,
         int row_start,
         const std::vector<Staple>& prev_staples);
+    
+    std::vector<Staple> solveTripleRowMinimal(
+       const std::vector<std::vector<Cell*>>& cells_in_rows,
+       int row_start,
+       const std::vector<Staple>& prev_staples);
 
     
 
@@ -65,7 +70,9 @@ private:
     static const int MAX_NODES_PER_SITE = 2000;
     static const int PRUNING_FREQUENCY = 10;  // Every 10 sites pruning one time
     static const int BENEFIT_THRESHOLD = 3;   // 收益差距閾值
+
     
+
     /**
      * @brief Create initial DAG source node
      */
@@ -172,7 +179,12 @@ private:
     /**
      * @brief Get initial s values for compact encoding
      */
-    void computeInitialS(const std::vector<std::vector<Cell*>>& cells_in_rows);
+    void forceCompleteCleanup();
+    void processNodesAtSiteWithTimeout(int site, const std::vector<std::vector<Cell *>> &cells_in_rows, const std::vector<Staple> &prev_staples, int row_start, int max_seconds);
+    void aggressivePruning(int current_site);
+    std::vector<Staple> extractOptimalSolution(const std::vector<std::vector<Cell *>> &cells_in_rows, int row_start);
+    std::vector<Staple> generateFallbackSolution(const std::vector<std::vector<Cell *>> &cells_in_rows, int row_start, const std::vector<Staple> &prev_staples);
+    void computeInitialS(const std::vector<std::vector<Cell *>> &cells_in_rows);
 };
 
 class StuckDetector {
