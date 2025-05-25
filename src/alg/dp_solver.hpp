@@ -18,6 +18,7 @@
 #include <memory>
 #include <chrono>
 #include <iostream>
+#include <iomanip>
 
 
 /**
@@ -38,7 +39,94 @@ public:
         const std::vector<std::vector<Cell*>>& cells_in_rows,
         int row_start,
         const std::vector<Staple>& prev_staples);
+
+    /**
+     * @brief Simplified cell placement check
+     */
+    bool canPlaceNextCellSimple(int row, int s_j, int l_j, int site,
+                               const std::vector<Cell*>& row_cells);
     
+    /**
+     * @brief Simplified cell deferral check  
+     */
+    bool canDeferNextCellSimple(int row, int s_j, int l_j, int site,
+                               const std::vector<Cell*>& row_cells);
+    
+    /**
+     * @brief Create or find node (simplified)
+     */
+    DPNode* createOrFindNodeSimple(int site, int s1, int l1, int s2, int l2, 
+                                  int s3, int l3, std::queue<DPNode*>& Q);
+    
+    /**
+     * @brief Simplified benefit update
+     */
+    void updateBenefitSimple(DPNode* source, DPNode* target,
+                            const std::vector<std::vector<Cell*>>& cells_in_rows,
+                            const std::vector<Staple>& prev_staples,
+                            int row_start);
+
+    /**
+     * @brief Determine staple type based on the rows it connects
+     * CRITICAL: This function determines whether a staple is VDD or VSS
+     */
+    bool determineStapleType(int lower_row, int upper_row);
+    
+    bool hasStaggeringViolation(const std::vector<Staple> &potential_staples,
+                                const std::vector<Staple> &prev_staples,
+                                int current_site, int row_start);
+
+    /**
+     * @brief Detect staggering pattern based on Figure 1(c) in paper
+     */
+    bool isStaggeringPattern(const Staple& new_staple, 
+                            const std::vector<Staple>& nearby_staples);
+    
+    /**
+     * @brief Backtrack solution with constraint validation
+     */
+    std::vector<Staple> backtrackWithValidation(DPNode* final_node, int final_case,
+                                               const std::vector<std::vector<Cell*>>& cells_in_rows,
+                                               int row_start);
+    
+    /**
+     * @brief Post-process to improve balance
+     */
+    std::vector<Staple> postProcessBalance(const std::vector<Staple>& original_staples,
+                                          int row_start);
+    
+    /**
+     * @brief Generate balanced fallback solution
+     */
+    std::vector<Staple> generateBalancedFallback(
+        const std::vector<std::vector<Cell*>>& cells_in_rows,
+        int row_start);
+
+    /**
+     * @brief Simplified staple insertion check
+     */
+    bool canInsertStapleSimple(int site, int between_rows, int s[3], int l[3],
+                              const std::vector<std::vector<Cell*>>& cells_in_rows);
+    
+    /**
+     * @brief Add node to lookup table
+     */
+    void addToLookupTable(DPNode* node);
+    
+    /**
+     * @brief Extract best solution from completed DAG
+     */
+    std::vector<Staple> extractBestSolution(
+        const std::vector<std::vector<Cell*>>& cells_in_rows,
+        int row_start);
+    
+    /**
+     * @brief Generate simple fallback solution (improved version)
+     */
+    std::vector<Staple> generateSimpleFallback(
+        const std::vector<std::vector<Cell*>>& cells_in_rows,
+        int row_start);
+
     std::vector<Staple> solveTripleRowMinimal(
        const std::vector<std::vector<Cell*>>& cells_in_rows,
        int row_start,
@@ -185,6 +273,20 @@ private:
     std::vector<Staple> extractOptimalSolution(const std::vector<std::vector<Cell *>> &cells_in_rows, int row_start);
     std::vector<Staple> generateFallbackSolution(const std::vector<std::vector<Cell *>> &cells_in_rows, int row_start, const std::vector<Staple> &prev_staples);
     void computeInitialS(const std::vector<std::vector<Cell *>> &cells_in_rows);
+
+    /**
+     * @brief Generate forced balance fallback when no good solution exists
+     */
+    std::vector<Staple> generateForcedBalanceFallback(
+        const std::vector<std::vector<Cell*>>& cells_in_rows,
+        int row_start);
+    
+    /**
+     * @brief Generate hybrid solution when DP fails to create both types
+     */
+    std::vector<Staple> generateHybridSolution(DPNode* dp_node, int dp_case,
+                                              const std::vector<std::vector<Cell*>>& cells_in_rows,
+                                              int row_start);
 };
 
 class StuckDetector {

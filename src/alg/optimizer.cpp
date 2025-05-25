@@ -153,32 +153,4 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
     
     // 解決這個triple-row subproblem
     std::vector<Staple> new_staples_this_round = dp_solver.solveTripleRow(
-        cells_in_rows, row_start, prev_staples);
-
-    // std::vector<Staple> new_staples_this_round = dp_solver.solveTripleRowMinimal(
-    //    cells_in_rows, row_start, prev_staples);
-    
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        end_time - start_time);
-    
-    // 修正：顯示THIS round的實際新增staples
-    std::cout << "Triple-row optimization completed in " << duration.count() 
-              << " ms. Inserted " << new_staples_this_round.size() 
-              << " NEW staples (this round only)." << std::endl;
-    
-    Logger::log("Triple-row subproblem completed: " + 
-                std::to_string(new_staples_this_round.size()) + " NEW staples inserted");
-    
-    // 重要：只返回這一輪新增的staples
-    return new_staples_this_round;
-}
-
-/**
- * @brief Determine if a position is a VDD or VSS row
- */
-bool Optimizer::isVDDRow(int row_idx) const {
-    // Alternate rows for power and ground
-    // Even rows (0, 2, 4, ...) are VDD, odd rows are VSS
-    return (row_idx % 2 == 0);
-}
+        cells_in_rows, row_start, prev_st
