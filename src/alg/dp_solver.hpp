@@ -70,7 +70,9 @@ public:
      * @brief Determine staple type based on the rows it connects
      * CRITICAL: This function determines whether a staple is VDD or VSS
      */
-    bool determineStapleType(int lower_row, int upper_row);
+    bool determineStapleTypeBalanced(int lower_row, int upper_row, 
+                                          int current_vdd, int current_vss, 
+                                          int site);
     
     bool hasStaggeringViolation(const std::vector<Staple> &potential_staples,
                                 const std::vector<Staple> &prev_staples,
@@ -131,8 +133,8 @@ public:
        const std::vector<std::vector<Cell*>>& cells_in_rows,
        int row_start,
        const std::vector<Staple>& prev_staples);
-
     
+    void testStapleTypeDistribution();
 
 private:
     // Input data
@@ -287,6 +289,7 @@ private:
     std::vector<Staple> generateHybridSolution(DPNode* dp_node, int dp_case,
                                               const std::vector<std::vector<Cell*>>& cells_in_rows,
                                               int row_start);
+    
 };
 
 class StuckDetector {
@@ -319,10 +322,4 @@ public:
     }
     
     int getStuckDuration() {
-        auto now = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_progress_time);
-        return duration.count();
-    }
-};
-
-#endif // DP_SOLVER_HPP
+        auto now = std::chrono::high_resolution

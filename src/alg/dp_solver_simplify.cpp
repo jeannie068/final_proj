@@ -283,26 +283,22 @@ void DPSolver::updateBenefitSimple(DPNode* source, DPNode* target,
                 case CASE_2_R1_R2: {
                     if (canInsertStapleSimple(target->site, 0, target->s, target->l, cells_in_rows)) {
                         int x = target->site * chip_info.site_width;
-                        int y = chip_info.getRowY(row_start + 1);  // Between R1 and R2
+                        int y = chip_info.getRowY(row_start + 1);
                         
-                        // FIXED: Correct VDD/VSS assignment
-                        // Staple between row_start and row_start+1
-                        // Type depends on the power network between these rows
-                        bool is_vdd = determineStapleType(row_start, row_start + 1);
+                        // 使用改進的平衡型判定函數
+                        bool is_vdd = determineStapleTypeBalanced(
+                            row_start, row_start + 1,
+                            source->vdd_staples[src_case], 
+                            source->vss_staples[src_case],
+                            target->site
+                        );
                         
                         potential_staples.push_back(Staple(x, y, is_vdd));
                         
                         if (is_vdd) vdd_added = 1;
                         else vss_added = 1;
-                        
-                        // Debug logging
-                        if (target->site % 100 == 0) {  // Log every 100 sites
-                            std::cout << "CASE_2 at site " << target->site 
-                                      << ": R" << row_start << "-R" << (row_start+1) 
-                                      << " staple -> " << (is_vdd ? "VDD" : "VSS") << std::endl;
-                        }
                     } else {
-                        continue;  // Cannot insert staple
+                        continue;
                     }
                     break;
                 }
@@ -310,25 +306,22 @@ void DPSolver::updateBenefitSimple(DPNode* source, DPNode* target,
                 case CASE_3_R2_R3: {
                     if (canInsertStapleSimple(target->site, 1, target->s, target->l, cells_in_rows)) {
                         int x = target->site * chip_info.site_width;
-                        int y = chip_info.getRowY(row_start + 2);  // Between R2 and R3
+                        int y = chip_info.getRowY(row_start + 2);
                         
-                        // FIXED: Correct VDD/VSS assignment  
-                        // Staple between row_start+1 and row_start+2
-                        bool is_vdd = determineStapleType(row_start + 1, row_start + 2);
+                        // 使用改進的平衡型判定函數
+                        bool is_vdd = determineStapleTypeBalanced(
+                            row_start + 1, row_start + 2,
+                            source->vdd_staples[src_case], 
+                            source->vss_staples[src_case],
+                            target->site
+                        );
                         
                         potential_staples.push_back(Staple(x, y, is_vdd));
                         
                         if (is_vdd) vdd_added = 1;
                         else vss_added = 1;
-                        
-                        // Debug logging
-                        if (target->site % 100 == 0) {  // Log every 100 sites
-                            std::cout << "CASE_3 at site " << target->site 
-                                      << ": R" << (row_start+1) << "-R" << (row_start+2) 
-                                      << " staple -> " << (is_vdd ? "VDD" : "VSS") << std::endl;
-                        }
                     } else {
-                        continue;  // Cannot insert staple
+                        continue;
                     }
                     break;
                 }
@@ -338,59 +331,83 @@ void DPSolver::updateBenefitSimple(DPNode* source, DPNode* target,
             int new_vdd = source->vdd_staples[src_case] + vdd_added;
             int new_vss = source->vss_staples[src_case] + vss_added;
             
-            // === ENHANCED BALANCE ENFORCEMENT ===
+            // === 論文中的Balance Factor實現 ===
             double balance_penalty = 0.0;
             double balance_bonus = 0.0;
             
+            // 計算當前比例
             if (new_vdd > 0 && new_vss > 0) {
                 double ratio = static_cast<double>(std::max(new_vdd, new_vss)) / 
                               static_cast<double>(std::min(new_vdd, new_vss));
                 
+                // 超過balance constraint時施加懲罰
                 if (ratio > 1.1) {
-                    balance_penalty = (ratio - 1.1) * 500;  // Increased penalty
+                    balance_penalty = (ratio - 1.1) * 1000;  // 重懲罰
                     
-                    if (ratio > 1.8) {
-                        continue;  // Reject severely unbalanced solutions
+                    // 嚴重失衡時直接拒絕
+                    if (ratio > 2.0) {
+                        continue;
                     }
                 }
                 
-                // Bonus for good balance
-                if (ratio <= 1.05) {
-                    balance_bonus = 100;
+                // 良好平衡時給予獎勵
+                if (ratio <= 1.02) {
+                    balance_bonus = 200;  // 完美平衡獎勵
+                } else if (ratio <= 1.05) {
+                    balance_bonus = 100;  // 良好平衡獎勵
                 } else if (ratio <= 1.1) {
-                    balance_bonus = 50;
+                    balance_bonus = 50;   // 可接受平衡獎勵
                 }
             }
             
-            // CRITICAL: Strong bonus for creating the underrepresented type
+            // 論文中的β factor：鼓勵為後續平衡保留空間
+            if (tgt_case == CASE_1_NO_STAPLE) {
+                // 當不插入staple時，如果有助於未來平衡，給予bonus
+                if (new_vdd != new_vss) {
+                    balance_bonus += params.balance_factor * 100;
+                }
+            }
+            
+            // 首次生成特定類型時的特別獎勵
             if (source->vdd_staples[src_case] == 0 && vdd_added > 0) {
-                balance_bonus += 200;  // Big bonus for first VDD
-                std::cout << "First VDD staple bonus at site " << target->site << std::endl;
+                balance_bonus += 500;  // 首個VDD獎勵
             }
             if (source->vss_staples[src_case] == 0 && vss_added > 0) {
-                balance_bonus += 200;  // Big bonus for first VSS
-                std::cout << "First VSS staple bonus at site " << target->site << std::endl;
+                balance_bonus += 500;  // 首個VSS獎勵
             }
             
-            // Strong bonus for balancing when imbalanced
-            if (source->vdd_staples[src_case] > source->vss_staples[src_case] * 1.3 && vss_added > 0) {
-                balance_bonus += 150;  // Strong bonus for adding VSS when VDD is high
-            } else if (source->vss_staples[src_case] > source->vdd_staples[src_case] * 1.3 && vdd_added > 0) {
-                balance_bonus += 150;  // Strong bonus for adding VDD when VSS is high
+            // 平衡恢復獎勵
+            double old_ratio = 1.0;
+            if (source->vdd_staples[src_case] > 0 && source->vss_staples[src_case] > 0) {
+                old_ratio = static_cast<double>(std::max(source->vdd_staples[src_case], source->vss_staples[src_case])) / 
+                           static_cast<double>(std::min(source->vdd_staples[src_case], source->vss_staples[src_case]));
             }
             
-            // === CHECK STAGGERING CONSTRAINT ===
+            double new_ratio = 1.0;
+            if (new_vdd > 0 && new_vss > 0) {
+                new_ratio = static_cast<double>(std::max(new_vdd, new_vss)) / 
+                           static_cast<double>(std::min(new_vdd, new_vss));
+            }
+            
+            // 如果新比例比舊比例更好，給予獎勵
+            if (new_ratio < old_ratio) {
+                balance_bonus += (old_ratio - new_ratio) * 300;
+            }
+            
+            // === Staggering約束檢查 ===
             double staggering_penalty = 0.0;
             if (!potential_staples.empty()) {
                 if (hasStaggeringViolation(potential_staples, prev_staples, target->site, row_start)) {
-                    staggering_penalty = 300;  // Moderate penalty for staggering
+                    staggering_penalty = 200;  // 論文中的staggering懲罰
                 }
             }
             
-            // === CALCULATE FINAL BENEFIT ===
+            // === 最終benefit計算 ===
             int base_benefit = (tgt_case == CASE_1_NO_STAPLE) ? 0 : 100;
             
-            int final_benefit = static_cast<int>(base_benefit + balance_bonus - balance_penalty - staggering_penalty);
+            int final_benefit = static_cast<int>(
+                base_benefit + balance_bonus - balance_penalty - staggering_penalty
+            );
             
             // Update if better
             int new_benefit = source->benefit[src_case] + final_benefit;
@@ -406,27 +423,42 @@ void DPSolver::updateBenefitSimple(DPNode* source, DPNode* target,
 }
 
 /**
- * @brief Determine staple type based on the rows it connects
- * This is the CRITICAL function that was causing all VDD staples
+ * @brief 動態平衡的Staple Type判定函數（推薦版本）
+ * 根據當前VDD/VSS比例動態調整，確保滿足balance constraint
  */
-bool DPSolver::determineStapleType(int lower_row, int upper_row) {
-    // VLSI standard: alternating VDD/VSS rows
-    // Row 0: VDD, Row 1: VSS, Row 2: VDD, Row 3: VSS, etc.
+bool DPSolver::determineStapleTypeBalanced(int lower_row, int upper_row, 
+                                          int current_vdd, int current_vss, 
+                                          int site) {
+    // 如果一種類型為0，優先生成缺失的類型
+    if (current_vdd == 0) return true;   // 生成VDD
+    else if (current_vss == 0) return false;  // 生成VSS
     
-    bool lower_is_vdd = (lower_row % 2 == 0);
-    bool upper_is_vdd = (upper_row % 2 == 0);
-    
-    // Strategy 1: Staple connects VDD to VSS, type alternates by position
-    // Use a more balanced approach
-    if (lower_is_vdd && !upper_is_vdd) {
-        // VDD-VSS connection: alternate based on global position
-        bool result = ((lower_row + upper_row) % 4 < 2);
-        return result;
-    } else if (!lower_is_vdd && upper_is_vdd) {
-        // VSS-VDD connection: alternate based on global position
-        bool result = ((lower_row + upper_row) % 4 >= 2);
-        return result;
+    // 計算當前比例
+    double current_ratio = 1.0;
+    if (current_vdd > 0 && current_vss > 0) {
+        current_ratio = static_cast<double>(std::max(current_vdd, current_vss)) / 
+                       static_cast<double>(std::min(current_vdd, current_vss));
     }
+    
+    
+    // 如果比例失衡，優先生成少數類型
+    if (current_ratio > 1.05) {
+        if (current_vdd > current_vss) {
+            return false;  // 生成VSS來平衡
+        } else {
+            return true;   // 生成VDD來平衡
+        }
+    }
+    
+    // 比例平衡時，使用空間分佈策略
+    // 策略1: 基於site位置交替
+    bool spatial_choice = (site % 2 == 0);
+    
+    // 策略2: 基於行位置交替  
+    bool row_choice = ((lower_row + upper_row) % 2 == 0);
+    
+    // 組合兩種策略
+    return (spatial_choice ^ row_choice);  // XOR提供更好的分佈
 }
 
 /**
@@ -575,10 +607,10 @@ std::vector<Staple> DPSolver::extractBestSolution(
     std::cout << "\n=== Extracting solution with balance enforcement ===" << std::endl;
     
     // Find candidate solutions
-    std::vector<std::tuple<DPNode*, int, double, int, int>> candidates;  // node, case, ratio, vdd, vss
+    std::vector<std::tuple<DPNode*, int, double, int, int>> candidates;
     
     for (DPNode* node : all_nodes) {
-        if (node->site >= chip_info.total_sites - 20) {  // Look at nodes near the end
+        if (node->site >= chip_info.total_sites - 20) {
             for (int c = 0; c < DPNode::NUM_CASES; c++) {
                 if (node->benefit[c] > -900000) {
                     int vdd = node->vdd_staples[c];
@@ -589,7 +621,7 @@ std::vector<Staple> DPSolver::extractBestSolution(
                         ratio = static_cast<double>(std::max(vdd, vss)) / 
                                static_cast<double>(std::min(vdd, vss));
                     } else if (vdd == 0 || vss == 0) {
-                        ratio = 999.0;  // Penalty for missing type
+                        ratio = 999.0;
                     }
                     
                     candidates.push_back({node, c, ratio, vdd, vss});
@@ -598,35 +630,26 @@ std::vector<Staple> DPSolver::extractBestSolution(
         }
     }
     
+    std::cout << "Found " << candidates.size() << " candidate solutions" << std::endl;
+    
     if (candidates.empty()) {
         std::cout << "No valid solutions found, using forced-balance fallback" << std::endl;
         return generateForcedBalanceFallback(cells_in_rows, row_start);
     }
     
-    // Sort by balance quality first, then benefit
+    // Sort by total staples first (we want more staples), then by balance
     std::sort(candidates.begin(), candidates.end(),
               [](const auto& a, const auto& b) {
-                  double ratio_a = std::get<2>(a);
-                  double ratio_b = std::get<2>(b);
-                  int vdd_a = std::get<3>(a);
-                  int vss_a = std::get<4>(a);
-                  int vdd_b = std::get<3>(b);
-                  int vss_b = std::get<4>(b);
+                  int total_a = std::get<3>(a) + std::get<4>(a);
+                  int total_b = std::get<3>(b) + std::get<4>(b);
                   
-                  // Strongly prefer solutions with both types
-                  bool both_types_a = (vdd_a > 0 && vss_a > 0);
-                  bool both_types_b = (vdd_b > 0 && vss_b > 0);
-                  
-                  if (both_types_a && !both_types_b) return true;
-                  if (!both_types_a && both_types_b) return false;
-                  
-                  // If both have both types, prefer better balance
-                  if (both_types_a && both_types_b) {
-                      return ratio_a < ratio_b;
+                  // Prefer more staples
+                  if (total_a != total_b) {
+                      return total_a > total_b;
                   }
                   
-                  // If neither has both types, prefer the one with more total staples
-                  return (vdd_a + vss_a) > (vdd_b + vss_b);
+                  // Then prefer better balance
+                  return std::get<2>(a) < std::get<2>(b);
               });
     
     // Use best candidate
@@ -636,18 +659,24 @@ std::vector<Staple> DPSolver::extractBestSolution(
               << ", ratio=" << std::fixed << std::setprecision(3) << best_ratio 
               << ", benefit=" << best_node->benefit[best_case] << std::endl;
     
-    // If still no VSS staples, force some
-    if (vss_count == 0) {
-        std::cout << "WARNING: No VSS staples found, generating hybrid solution" << std::endl;
-        return generateHybridSolution(best_node, best_case, cells_in_rows, row_start);
+    // If solution is reasonable, use it
+    if (vdd_count + vss_count >= 20) {  // 至少20個staples
+        return backtrackWithValidation(best_node, best_case, cells_in_rows, row_start);
+    } else {
+        std::cout << "Solution too small (" << (vdd_count + vss_count) 
+                  << " staples), using fallback" << std::endl;
+        return generateForcedBalanceFallback(cells_in_rows, row_start);
     }
-    
-    return backtrackWithValidation(best_node, best_case, cells_in_rows, row_start);
 }
 
 
 /**
- * @brief Generate simple fallback solution (much better than previous)
+ * @brief 修復的Fallback函數 - 確保正確的VDD/VSS平衡
+ * 替換dp_solver_simplify.cpp中的相應函數
+ */
+
+/**
+ * @brief 修復的generateSimpleFallback函數
  */
 std::vector<Staple> DPSolver::generateSimpleFallback(
     const std::vector<std::vector<Cell*>>& cells_in_rows,
@@ -656,6 +685,7 @@ std::vector<Staple> DPSolver::generateSimpleFallback(
     std::cout << "Generating improved fallback solution..." << std::endl;
     
     std::vector<Staple> staples;
+    int vdd_count = 0, vss_count = 0;  // 添加計數器
     
     // More intelligent spacing based on cell density
     int total_cells = 0;
@@ -671,25 +701,278 @@ std::vector<Staple> DPSolver::generateSimpleFallback(
         
         int x = site * chip_info.site_width;
         
+        // === 修復1: 使用平衡邏輯而不是固定的isVDDRow ===
+        
         // R1-R2 staple
         if (row_start + 1 < chip_info.num_rows) {
             int y = chip_info.getRowY(row_start + 1);
-            bool is_vdd = isVDDRow(row_start);
+            
+            // 使用動態平衡邏輯
+            bool is_vdd;
+            if (vdd_count == 0 && vss_count == 0) {
+                // 首個staple，基於位置決定
+                is_vdd = (site % 2 == 0);
+            } else if (vdd_count == 0) {
+                is_vdd = true;   // 需要VDD
+            } else if (vss_count == 0) {
+                is_vdd = false;  // 需要VSS
+            } else {
+                // 基於當前平衡狀況決定
+                double ratio = static_cast<double>(std::max(vdd_count, vss_count)) / 
+                              static_cast<double>(std::min(vdd_count, vss_count));
+                
+                if (ratio > 1.1) {
+                    // 失衡，生成少數類型
+                    is_vdd = (vdd_count < vss_count);
+                } else {
+                    // 平衡，交替生成
+                    is_vdd = (site % 2 == 0);
+                }
+            }
+            
             staples.push_back(Staple(x, y, is_vdd));
+            if (is_vdd) vdd_count++; else vss_count++;
         }
         
         // R2-R3 staple (alternate sites to avoid clustering)
         if (row_start + 2 < chip_info.num_rows && site % (base_spacing * 2) == 0) {
             int y = chip_info.getRowY(row_start + 2);
-            bool is_vdd = isVDDRow(row_start + 1);
+            
+            // 類似的平衡邏輯
+            bool is_vdd;
+            if (vdd_count == 0) {
+                is_vdd = true;
+            } else if (vss_count == 0) {
+                is_vdd = false;
+            } else {
+                double ratio = static_cast<double>(std::max(vdd_count, vss_count)) / 
+                              static_cast<double>(std::min(vdd_count, vss_count));
+                
+                if (ratio > 1.1) {
+                    is_vdd = (vdd_count < vss_count);
+                } else {
+                    // 與R1-R2 staple使用不同的策略確保多樣性
+                    is_vdd = ((site + 1) % 2 == 0);
+                }
+            }
+            
             staples.push_back(Staple(x, y, is_vdd));
+            if (is_vdd) vdd_count++; else vss_count++;
         }
         
         // Reasonable limit
         if (staples.size() >= total_cells / 2) break;
     }
     
-    std::cout << "Fallback generated " << staples.size() << " staples" << std::endl;
+    // 最終統計
+    double final_ratio = (vdd_count > 0 && vss_count > 0) ? 
+                        static_cast<double>(std::max(vdd_count, vss_count)) / 
+                        static_cast<double>(std::min(vdd_count, vss_count)) : 1.0;
+    
+    std::cout << "Fallback generated " << staples.size() << " staples: "
+              << "VDD=" << vdd_count << ", VSS=" << vss_count 
+              << ", ratio=" << std::fixed << std::setprecision(3) << final_ratio << std::endl;
+    
+    return staples;
+}
+
+/**
+ * @brief 修復的generateBalancedFallback函數
+ */
+std::vector<Staple> DPSolver::generateBalancedFallback(
+    const std::vector<std::vector<Cell*>>& cells_in_rows,
+    int row_start) {
+    
+    std::cout << "Generating balanced fallback solution..." << std::endl;
+    
+    std::vector<Staple> staples;
+    int vdd_count = 0, vss_count = 0;
+    
+    // More intelligent spacing
+    int total_cells = 0;
+    for (const auto& row : cells_in_rows) {
+        total_cells += row.size();
+    }
+    
+    int spacing = std::max(4, chip_info.total_sites / (total_cells + 20));
+    
+    for (int site = spacing; site < chip_info.total_sites - spacing; site += spacing) {
+        int x = site * chip_info.site_width;
+        
+        // === 修復2: 移除有問題的prefer_vdd邏輯 ===
+        
+        // 計算當前比例
+        double current_ratio = 1.0;
+        if (vdd_count > 0 && vss_count > 0) {
+            current_ratio = static_cast<double>(std::max(vdd_count, vss_count)) / 
+                           static_cast<double>(std::min(vdd_count, vss_count));
+        }
+        
+        // 動態決定下一個staple類型
+        auto determineNextType = [&]() -> bool {
+            // 如果某種類型為0，優先生成該類型
+            if (vdd_count == 0) return true;
+            if (vss_count == 0) return false;
+            
+            // 如果失衡，生成少數類型
+            if (current_ratio > 1.05) {
+                return (vdd_count < vss_count);
+            }
+            
+            // 平衡時，基於空間位置交替
+            return (site % 2 == 0);
+        };
+        
+        // Alternate between R1-R2 and R2-R3 staples
+        if (site % (spacing * 2) == 0) {
+            // R1-R2 staple
+            if (row_start + 1 < chip_info.num_rows) {
+                int y = chip_info.getRowY(row_start + 1);
+                bool is_vdd = determineNextType();
+                staples.push_back(Staple(x, y, is_vdd));
+                if (is_vdd) vdd_count++; else vss_count++;
+            }
+        } else {
+            // R2-R3 staple
+            if (row_start + 2 < chip_info.num_rows) {
+                int y = chip_info.getRowY(row_start + 2);
+                bool is_vdd = determineNextType();
+                staples.push_back(Staple(x, y, is_vdd));
+                if (is_vdd) vdd_count++; else vss_count++;
+            }
+        }
+        
+        // Stop if balance is good and we have enough staples
+        if (staples.size() >= total_cells / 4 && current_ratio <= 1.1) {
+            break;
+        }
+    }
+    
+    double final_ratio = (vdd_count > 0 && vss_count > 0) ? 
+                        static_cast<double>(std::max(vdd_count, vss_count)) / 
+                        static_cast<double>(std::min(vdd_count, vss_count)) : 1.0;
+    
+    std::cout << "Balanced fallback: " << staples.size() << " staples (VDD:" << vdd_count 
+              << ", VSS:" << vss_count << ", ratio:" << std::fixed << std::setprecision(3) 
+              << final_ratio << ")" << std::endl;
+    
+    return staples;
+}
+
+/**
+ * @brief 修復的generateForcedBalanceFallback函數
+ */
+std::vector<Staple> DPSolver::generateForcedBalanceFallback(
+    const std::vector<std::vector<Cell*>>& cells_in_rows,
+    int row_start) {
+    
+    std::cout << "Generating SIMPLE forced-balance fallback solution..." << std::endl;
+    
+    std::vector<Staple> staples;
+    int vdd_count = 0, vss_count = 0;
+    
+    // 使用固定間距，確保生成足夠的staples
+    int spacing = 8;  // 每8個sites一個staple
+    
+    std::cout << "Using spacing=" << spacing << ", total_sites=" << chip_info.total_sites << std::endl;
+    
+    // 簡單的交替策略
+    bool next_should_be_vdd = true;  // 從VDD開始
+    
+    for (int site = spacing; site < chip_info.total_sites - spacing; site += spacing) {
+        int x = site * chip_info.site_width;
+        
+        // === 強制簡單交替 ===
+        
+        // R1-R2 staple
+        if (row_start + 1 < chip_info.num_rows) {
+            int y = chip_info.getRowY(row_start + 1);
+            
+            bool is_vdd = next_should_be_vdd;
+            staples.push_back(Staple(x, y, is_vdd));
+            
+            if (is_vdd) vdd_count++; 
+            else vss_count++;
+            
+            // Debug output every 10 staples
+            if (staples.size() % 10 == 1) {
+                std::cout << "  Site " << site << " R1-R2: " << (is_vdd ? "VDD" : "VSS") 
+                          << " (total: VDD=" << vdd_count << ", VSS=" << vss_count << ")" << std::endl;
+            }
+            
+            // 交替下一個類型
+            next_should_be_vdd = !next_should_be_vdd;
+        }
+        
+        // R2-R3 staple (offset by half spacing to avoid clustering)
+        if (row_start + 2 < chip_info.num_rows && (site % (spacing * 2)) == 0) {
+            int y = chip_info.getRowY(row_start + 2);
+            
+            bool is_vdd = next_should_be_vdd;
+            staples.push_back(Staple(x + spacing/2 * chip_info.site_width, y, is_vdd));
+            
+            if (is_vdd) vdd_count++;
+            else vss_count++;
+            
+            // Debug output every 10 staples  
+            if (staples.size() % 10 == 1) {
+                std::cout << "  Site " << (site + spacing/2) << " R2-R3: " << (is_vdd ? "VDD" : "VSS")
+                          << " (total: VDD=" << vdd_count << ", VSS=" << vss_count << ")" << std::endl;
+            }
+            
+            // 交替下一個類型
+            next_should_be_vdd = !next_should_be_vdd;
+        }
+        
+        // 檢查是否已經足夠
+        if (staples.size() >= 200) {  // 每個triple-row至少200個staples
+            double current_ratio = (vdd_count > 0 && vss_count > 0) ? 
+                                  static_cast<double>(std::max(vdd_count, vss_count)) / 
+                                  static_cast<double>(std::min(vdd_count, vss_count)) : 999.0;
+            
+            std::cout << "  Current ratio: " << std::fixed << std::setprecision(3) << current_ratio << std::endl;
+            
+            if (current_ratio <= 1.2) {  // 稍微寬鬆的條件
+                std::cout << "  Good balance achieved, stopping at " << staples.size() << " staples" << std::endl;
+                break;
+            }
+        }
+    }
+    
+    // 如果仍然沒有VSS，強制添加一些
+    if (vss_count == 0 && vdd_count > 0) {
+        std::cout << "WARNING: No VSS staples generated, forcing some..." << std::endl;
+        
+        // 將前一半VDD改為VSS
+        int to_convert = vdd_count / 2;
+        for (int i = 0; i < to_convert && i < static_cast<int>(staples.size()); i += 2) {
+            staples[i].is_vdd = false;  // 改為VSS
+            vdd_count--;
+            vss_count++;
+        }
+    }
+    
+    // 如果仍然沒有VDD，強制添加一些
+    if (vdd_count == 0 && vss_count > 0) {
+        std::cout << "WARNING: No VDD staples generated, forcing some..." << std::endl;
+        
+        // 將前一半VSS改為VDD
+        int to_convert = vss_count / 2;
+        for (int i = 0; i < to_convert && i < static_cast<int>(staples.size()); i += 2) {
+            staples[i].is_vdd = true;   // 改為VDD
+            vss_count--;
+            vdd_count++;
+        }
+    }
+    
+    double final_ratio = (vdd_count > 0 && vss_count > 0) ? 
+                        static_cast<double>(std::max(vdd_count, vss_count)) / 
+                        static_cast<double>(std::min(vdd_count, vss_count)) : 1.0;
+    
+    std::cout << "SIMPLE forced fallback: " << staples.size() << " staples (VDD:" << vdd_count 
+              << ", VSS:" << vss_count << ", ratio:" << std::fixed << std::setprecision(3) 
+              << final_ratio << ")" << std::endl;
+    
     return staples;
 }
 
@@ -823,129 +1106,6 @@ std::vector<Staple> DPSolver::postProcessBalance(const std::vector<Staple>& orig
               << new_ratio << ")" << std::endl;
     
     return result;
-}
-
-/**
- * @brief Generate balanced fallback solution
- */
-std::vector<Staple> DPSolver::generateBalancedFallback(
-    const std::vector<std::vector<Cell*>>& cells_in_rows,
-    int row_start) {
-    
-    std::cout << "Generating balanced fallback solution..." << std::endl;
-    
-    std::vector<Staple> staples;
-    int vdd_count = 0, vss_count = 0;
-    
-    // More intelligent spacing
-    int total_cells = 0;
-    for (const auto& row : cells_in_rows) {
-        total_cells += row.size();
-    }
-    
-    int spacing = std::max(4, chip_info.total_sites / (total_cells + 20));
-    
-    for (int site = spacing; site < chip_info.total_sites - spacing; site += spacing) {
-        int x = site * chip_info.site_width;
-        
-        // Determine which type of staple to add based on current balance
-        double current_ratio = (vdd_count > 0 && vss_count > 0) ? 
-                              static_cast<double>(std::max(vdd_count, vss_count)) / 
-                              static_cast<double>(std::min(vdd_count, vss_count)) : 1.0;
-        
-        bool prefer_vdd = (vss_count > vdd_count) || (current_ratio < 1.05);
-        
-        // Alternate between R1-R2 and R2-R3 staples
-        if (site % (spacing * 2) == 0) {
-            // R1-R2 staple
-            if (row_start + 1 < chip_info.num_rows) {
-                int y = chip_info.getRowY(row_start + 1);
-                bool is_vdd = prefer_vdd ? true : isVDDRow(row_start);
-                staples.push_back(Staple(x, y, is_vdd));
-                if (is_vdd) vdd_count++; else vss_count++;
-            }
-        } else {
-            // R2-R3 staple
-            if (row_start + 2 < chip_info.num_rows) {
-                int y = chip_info.getRowY(row_start + 2);
-                bool is_vdd = prefer_vdd ? true : isVDDRow(row_start + 1);
-                staples.push_back(Staple(x, y, is_vdd));
-                if (is_vdd) vdd_count++; else vss_count++;
-            }
-        }
-        
-        // Stop if balance is good and we have enough staples
-        if (staples.size() >= total_cells / 4 && current_ratio <= 1.1) {
-            break;
-        }
-    }
-    
-    double final_ratio = (vdd_count > 0 && vss_count > 0) ? 
-                        static_cast<double>(std::max(vdd_count, vss_count)) / 
-                        static_cast<double>(std::min(vdd_count, vss_count)) : 1.0;
-    
-    std::cout << "Balanced fallback: " << staples.size() << " staples (VDD:" << vdd_count 
-              << ", VSS:" << vss_count << ", ratio:" << std::fixed << std::setprecision(3) 
-              << final_ratio << ")" << std::endl;
-    
-    return staples;
-}
-
-/**
- * @brief Generate forced balance fallback when no good solution exists
- */
-std::vector<Staple> DPSolver::generateForcedBalanceFallback(
-    const std::vector<std::vector<Cell*>>& cells_in_rows,
-    int row_start) {
-    
-    std::cout << "Generating forced-balance fallback solution..." << std::endl;
-    
-    std::vector<Staple> staples;
-    int vdd_count = 0, vss_count = 0;
-    
-    int total_cells = 0;
-    for (const auto& row : cells_in_rows) {
-        total_cells += row.size();
-    }
-    
-    int spacing = std::max(3, chip_info.total_sites / (total_cells + 10));
-    
-    for (int site = spacing; site < chip_info.total_sites - spacing; site += spacing) {
-        int x = site * chip_info.site_width;
-        
-        // Force alternating VDD/VSS
-        bool force_vdd = (site / spacing) % 2 == 0;
-        
-        // Alternate between R1-R2 and R2-R3 staples
-        if (site % (spacing * 2) == 0) {
-            // R1-R2 staple
-            if (row_start + 1 < chip_info.num_rows) {
-                int y = chip_info.getRowY(row_start + 1);
-                staples.push_back(Staple(x, y, force_vdd));
-                if (force_vdd) vdd_count++; else vss_count++;
-            }
-        } else {
-            // R2-R3 staple
-            if (row_start + 2 < chip_info.num_rows) {
-                int y = chip_info.getRowY(row_start + 2);
-                staples.push_back(Staple(x, y, !force_vdd));  // Opposite type
-                if (!force_vdd) vdd_count++; else vss_count++;
-            }
-        }
-        
-        // Stop when we have reasonable balance
-        if (staples.size() >= total_cells / 3) {
-            double ratio = (vdd_count > 0 && vss_count > 0) ? 
-                          static_cast<double>(std::max(vdd_count, vss_count)) / 
-                          static_cast<double>(std::min(vdd_count, vss_count)) : 1.0;
-            if (ratio <= 1.1) break;
-        }
-    }
-    
-    std::cout << "Forced fallback: " << staples.size() << " staples (VDD:" << vdd_count 
-              << ", VSS:" << vss_count << ")" << std::endl;
-    
-    return staples;
 }
 
 
