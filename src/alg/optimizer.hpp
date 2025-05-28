@@ -21,6 +21,10 @@
 #include <chrono>
 #include <memory>
 
+std::vector<Staple> generateSimpleInitialStaplesFixed(const ChipInfo& chip_info,
+                                                     const std::vector<CellType>& cell_types,
+                                                     const std::vector<Cell>& cells);
+
 /**
  * @brief Main optimizer class for power staple insertion
  */

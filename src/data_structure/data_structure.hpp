@@ -194,16 +194,6 @@ struct CompactStateHasher {
     }
 };
 
-/**
- * @brief Five staple insertion cases from the paper (Figure 7)
- */
-enum StapleCase {
-    CASE_1_NO_STAPLE = 0,      // No staple inserted
-    CASE_2_R1_R2 = 1,          // Staple between R1 and R2
-    CASE_3_R2_R3 = 2,          // Staple between R2 and R3  
-    CASE_4_BOTH = 3,           // Both R1-R2 and R2-R3 staples
-    CASE_5_SPECIAL = 4         // Special configuration
-};
 
 /**
  * @brief DAG node for dynamic programming with five staple cases
