@@ -1,10 +1,6 @@
 /**
  * @file dp_solver.hpp
- * @brief Enhanced dynamic programming solver for manufacturing-aware power staple insertion
- * 
- * This file implements the DAG-based dynamic programming approach for triple-row
- * optimization as described in "Manufacturing-Aware Power Staple Insertion 
- * Optimization by Enhanced Multi-Row Detailed Placement Refinement" (ASP-DAC 2021).
+ * @brief Corrected dynamic programming solver for manufacturing-aware power staple insertion
  */
 
 #ifndef DP_SOLVER_HPP
@@ -21,109 +17,78 @@
 #include <iomanip>
 
 /**
- * @brief Enhanced staple case definitions following paper Figure 7
+ * @brief Five staple cases from paper Figure 7
  */
-enum EnhancedStapleCase {
-    CASE_1_NO_STAPLE = 0,        // No staple inserted
-    CASE_2_R1_R2_ONLY = 1,       // Only R1-R2 staple
-    CASE_3_R2_R3_ONLY = 2,       // Only R2-R3 staple  
-    CASE_4_BOTH_ALIGNED = 3,     // Both R1-R2 and R2-R3 staples, aligned
-    CASE_5_BOTH_STAGGERED = 4    // Both staples, but staggered (special manufacturing case)
+enum StapleCase {
+    CASE_1_NO_STAPLE = 0,
+    CASE_2_R1_R2_ONLY = 1,
+    CASE_3_R2_R3_ONLY = 2,
+    CASE_4_BOTH_ALIGNED = 3,
+    CASE_5_BOTH_STAGGERED = 4
 };
 
 /**
- * @brief Enhanced compact state with proper displacement tracking
+ * @brief DAG node for triple-row DP with 5 cases
  */
-struct EnhancedCompactState {
-    int site;
-    int a[3];           // Cell offset from initial placement
-    int b[3];           // Actual displacement of cells (not l values)
-    bool flipped[3];    // Flipping status of last placed cells
+struct DPNode {
+    // State: (i, s1, l1, s2, l2, s3, l3)
+    int site;      // Current site i
+    int s[3];      // Last placed cell index in each row
+    int l[3];      // Distance from site to cell's left boundary
     
-    bool operator==(const EnhancedCompactState& other) const {
+    // For each of 5 cases
+    struct CaseInfo {
+        int benefit;           // Maximum accumulated benefit
+        DPNode* prev_node;     // Previous node in optimal path
+        int prev_case;         // Which case in previous node
+        int vdd_count;         // VDD staples so far
+        int vss_count;         // VSS staples so far
+        bool valid;            // Is this case valid?
+        
+        CaseInfo() : benefit(-1000000), prev_node(nullptr), prev_case(-1), 
+                     vdd_count(0), vss_count(0), valid(false) {}
+    } cases[5];
+    
+    // Constructor
+    DPNode(int i, int s1, int l1, int s2, int l2, int s3, int l3) : site(i) {
+        s[0] = s1; s[1] = s2; s[2] = s3;
+        l[0] = l1; l[1] = l2; l[2] = l3;
+    }
+};
+
+/**
+ * @brief Compact state for hash lookup (Section 3.1 of paper)
+ */
+struct CompactState {
+    int site;
+    int a[3];  // Cell index offset from initial
+    int b[3];  // Proxy for displacement
+    
+    bool operator==(const CompactState& other) const {
         if (site != other.site) return false;
         for (int i = 0; i < 3; i++) {
-            if (a[i] != other.a[i] || b[i] != other.b[i] || flipped[i] != other.flipped[i]) 
-                return false;
+            if (a[i] != other.a[i] || b[i] != other.b[i]) return false;
         }
         return true;
     }
 };
 
 /**
- * @brief Hash function for EnhancedCompactState
+ * @brief Hash function for CompactState
  */
-struct EnhancedCompactStateHasher {
-    std::size_t operator()(const EnhancedCompactState& state) const {
+struct CompactStateHasher {
+    std::size_t operator()(const CompactState& state) const {
         std::size_t hash = std::hash<int>()(state.site);
         for (int i = 0; i < 3; i++) {
-            hash ^= std::hash<int>()(state.a[i]) << ((i * 3 + 1) * 4);
-            hash ^= std::hash<int>()(state.b[i]) << ((i * 3 + 2) * 4);
-            hash ^= std::hash<bool>()(state.flipped[i]) << ((i * 3 + 3) * 4);
+            hash ^= std::hash<int>()(state.a[i]) << ((i * 2 + 1) * 4);
+            hash ^= std::hash<int>()(state.b[i]) << ((i * 2 + 2) * 4);
         }
         return hash;
     }
 };
 
 /**
- * @brief Enhanced DP node with proper displacement tracking
- */
-struct EnhancedDPNode {
-    int site;           // Current site i
-    int s[3];          // Last placed cell index in each row
-    int l[3];          // Distance from site to cell's left boundary
-    int displacement[3]; // Actual displacement of last placed cells
-    bool is_flipped[3]; // Flipping status of last placed cells
-    
-    // Five staple insertion cases as per Figure 7 in the paper
-    static const int NUM_CASES = 5;
-    
-    // For each case, track:
-    int benefit[NUM_CASES];         // Maximum accumulated staple benefit
-    EnhancedDPNode* prev_node[NUM_CASES];   // Previous node pointer
-    int prev_case[NUM_CASES];       // Case in previous node
-    
-    // Staple balance tracking
-    int vdd_staples[NUM_CASES];
-    int vss_staples[NUM_CASES];
-    
-    // Detailed staple information for consistency
-    std::vector<Staple> staples_this_step[NUM_CASES];
-    
-    // Constructor
-    EnhancedDPNode(int i, int s1, int l1, int s2, int l2, int s3, int l3) 
-        : site(i) {
-        s[0] = s1; s[1] = s2; s[2] = s3;
-        l[0] = l1; l[1] = l2; l[2] = l3;
-        
-        // Initialize displacement and flipping
-        for (int j = 0; j < 3; j++) {
-            displacement[j] = 0;
-            is_flipped[j] = false;
-        }
-        
-        for (int c = 0; c < NUM_CASES; c++) {
-            benefit[c] = (c == 0) ? 0 : -1000000; // Case 1 (no staple) starts at 0
-            prev_node[c] = nullptr;
-            prev_case[c] = -1;
-            vdd_staples[c] = 0;
-            vss_staples[c] = 0;
-        }
-    }
-};
-
-/**
- * @brief Staple insertion information for validation
- */
-struct StapleInsertionInfo {
-    int x, y;
-    bool is_vdd;
-    int between_rows;  // 0: R1-R2, 1: R2-R3
-    EnhancedStapleCase case_type;
-};
-
-/**
- * @brief Enhanced dynamic programming solver for triple-row optimization
+ * @brief Dynamic programming solver for triple-row optimization
  */
 class DPSolver {
 public:
@@ -134,7 +99,7 @@ public:
     ~DPSolver();
     
     /**
-     * @brief Solve triple-row optimization problem using enhanced MATRO algorithm
+     * @brief Solve triple-row optimization problem
      */
     std::vector<Staple> solveTripleRow(
         const std::vector<std::vector<Cell*>>& cells_in_rows,
@@ -147,114 +112,61 @@ private:
     std::vector<CellType> cell_types;
     AlgorithmParams params;
     
-    // Enhanced DAG structure
-    std::queue<EnhancedDPNode*> node_queue;
-    std::unordered_map<EnhancedCompactState, EnhancedDPNode*, EnhancedCompactStateHasher> node_lookup;
-    std::vector<EnhancedDPNode*> all_nodes;
+    // DAG structure
+    std::vector<DPNode*> all_nodes;
+    std::unordered_map<CompactState, DPNode*, CompactStateHasher> node_lookup;
     
-    // Tracking
-    EnhancedDPNode* best_final_node;
+    // State tracking
+    int initial_s[3];  // Initial cell indices for compact encoding
+    std::vector<Staple> prev_staples;  // Staples from previous triple-rows
+    int row_start;  // Starting row of current triple-row problem
+    
+    // Statistics
+    DPNode* best_final_node;
     int best_final_case;
     size_t nodes_created;
     
-    // Initial cell positions for compact encoding
-    int initial_s[3];
-    int initial_cell_x[3][1000];  // Store initial x positions for displacement calculation
+    // Core functions
+    void generateExtensions(DPNode* current, 
+                           const std::vector<std::vector<Cell*>>& cells_in_rows,
+                           std::queue<DPNode*>& Q);
     
-    // Enhanced pruning strategy
-    static const int BEAM_WIDTH = 800;        // Keep top nodes per site
-    static const int PRUNING_FREQUENCY = 5;   // Prune every 5 sites
-    static const int MAX_TOTAL_NODES = 100000; // Global node limit
-    
-    /**
-     * @brief Enhanced legality checking with staggering validation
-     */
-    bool isLegalExtension(EnhancedDPNode* source, int target_site,
-                         int new_s[3], int new_l[3], int new_disp[3], bool new_flipped[3],
-                         bool placement_mask[3],
+    bool isLegalExtension(DPNode* current, bool place_cell[3],
                          const std::vector<std::vector<Cell*>>& cells_in_rows,
-                         const std::vector<Staple>& prev_staples, int row_start);
+                         int new_s[3], int new_l[3]);
     
-    /**
-     * @brief Enhanced benefit update with early staggering check
-     */
-    void updateBenefitEnhanced(EnhancedDPNode* source, EnhancedDPNode* target,
-                              const std::vector<std::vector<Cell*>>& cells_in_rows,
-                              const std::vector<Staple>& prev_staples, int row_start);
+    DPNode* createOrFindNode(int site, int s1, int l1, int s2, int l2, int s3, int l3);
     
-    /**
-     * @brief Calculate staples for a specific case
-     */
-    std::vector<Staple> calculateStaplesForCase(EnhancedStapleCase case_type, 
-                                               EnhancedDPNode* node, int row_start);
+    CompactState getCompactState(DPNode* node);
     
-    /**
-     * @brief Enhanced staggering violation check
-     */
-    bool hasStaggeringViolationEnhanced(const std::vector<Staple>& new_staples,
-                                       const std::vector<Staple>& prev_staples,
-                                       int current_site, int row_start);
+    void updateNodeCases(DPNode* source, DPNode* target,
+                        const std::vector<std::vector<Cell*>>& cells_in_rows);
     
-    /**
-     * @brief Detailed pin and staple overlap checking
-     */
-    bool hasOverlapWithPinsOrStaples(const Staple& new_staple,
-                                    const std::vector<std::vector<Cell*>>& cells_in_rows,
-                                    const std::vector<Staple>& existing_staples,
-                                    int row_start);
+    bool isValidCaseTransition(DPNode* source, int src_case,
+                              DPNode* target, int tgt_case,
+                              const std::vector<std::vector<Cell*>>& cells_in_rows);
     
-    /**
-     * @brief Check if a staple overlaps with cell pins
-     */
-    bool overlapWithPins(const Staple& staple, const std::vector<std::vector<Cell*>>& cells_in_rows, int row_start);
+    std::vector<Staple> getStaplesForCase(int case_type, DPNode* node);
     
-    /**
-     * @brief Check if a staple overlaps with other staples
-     */
-    bool overlapWithStaples(const Staple& staple, const std::vector<Staple>& existing_staples);
+    bool hasStaggeringViolation(const std::vector<Staple>& new_staples);
     
-    /**
-     * @brief Intelligent node pruning strategy
-     */
-    void pruneNodesIntelligently(int current_site);
+    bool hasOverlapWithPins(const Staple& staple, DPNode* node,
+                           const std::vector<std::vector<Cell*>>& cells_in_rows);
     
-    /**
-     * @brief Create or find enhanced node
-     */
-    EnhancedDPNode* createOrFindEnhancedNode(int site, int s1, int l1, int s2, int l2, int s3, int l3,
-                                           int disp1, int disp2, int disp3,
-                                           bool flip1, bool flip2, bool flip3);
+    int calculateCellPosition(DPNode* node, int row_idx, int cell_idx,
+                             const std::vector<std::vector<Cell*>>& cells_in_rows);
     
-    /**
-     * @brief Enhanced solution extraction
-     */
-    std::vector<Staple> extractBestSolutionEnhanced(
+    int calculateCaseBenefit(int case_type, DPNode* node, int current_vdd, int current_vss);
+    
+    std::pair<int, int> getStapleTypesForCase(int case_type, int site);
+    
+    bool determineStapleType(int row_boundary);
+    
+    std::vector<Staple> extractBestSolution(
         const std::vector<std::vector<Cell*>>& cells_in_rows, int row_start);
     
-    /**
-     * @brief Calculate proper case benefit based on paper
-     */
-    int calculateEnhancedCaseBenefit(EnhancedStapleCase case_type, int current_vdd, int current_vss);
+    void pruneOldNodes(int keep_after_site);
     
-    /**
-     * @brief Determine staple type with advanced balancing
-     */
-    bool determineStapleTypeAdvanced(int between_rows, int current_vdd, int current_vss, int site);
-    
-    /**
-     * @brief Check if row is VDD or VSS
-     */
-    bool isVDDRow(int row_idx) const;
-    
-    /**
-     * @brief Generate fallback solution
-     */
-    std::vector<Staple> generateEnhancedFallback(
-        const std::vector<std::vector<Cell*>>& cells_in_rows, int row_start);
-    
-    /**
-     * @brief Clean up allocated memory
-     */
     void cleanup();
 };
 

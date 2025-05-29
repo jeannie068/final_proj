@@ -64,16 +64,6 @@ public:
                     
                     if (candidate.is_vdd) vdd_count++;
                     else vss_count++;
-                    
-                    // Early termination if balance is getting bad
-                    if (vdd_count > 0 && vss_count > 0) {
-                        double ratio = static_cast<double>(std::max(vdd_count, vss_count)) / 
-                                      static_cast<double>(std::min(vdd_count, vss_count));
-                        if (ratio > 1.08) { // Leave some margin
-                            // Skip this site to maintain balance
-                            break;
-                        }
-                    }
                 }
             }
         }
@@ -86,22 +76,13 @@ public:
             double ratio = static_cast<double>(std::max(vdd_count, vss_count)) / 
                           static_cast<double>(std::min(vdd_count, vss_count));
             std::cout << "  Balance ratio: " << ratio << std::endl;
-        }
-        
-        // Final validation
-        std::cout << "Performing final validation..." << std::endl;
-        for (const Staple& s : staples) {
-            int s_site = s.x / chip_info.site_width;
-            int s_row = (s.y - chip_info.bottom_y) / chip_info.row_height;
-            
-            // Check bounds
-            if (s_row < 0 || s_row >= chip_info.num_rows) {
-                std::cerr << "ERROR: Staple at (" << s.x << ", " << s.y << ") has invalid row boundary" << std::endl;
-            }
-            
-            // Check pins
-            if (pin_occupied[s_row][s_site] || pin_occupied[s_row+1][s_site]) {
-                std::cerr << "ERROR: Staple at (" << s.x << ", " << s.y << ") overlaps with pins!" << std::endl;
+
+            if (ratio > 1.10) {
+                std::cout << "WARNING: Balance constraint not satisfied!" << std::endl;
+                // Attempt to enforce balance constraint
+                staples = enforceBalanceConstraint(staples, vdd_count, vss_count);  
+            } else {
+                std::cout << "Balance constraint satisfied" << std::endl;
             }
         }
         
@@ -153,16 +134,15 @@ private:
         int x = site * chip_info.site_width;
         
         // Check all possible staple positions (between adjacent rows)
-        // A staple at row boundary 'row' connects rows (row) and (row+1)
         for (int row = 0; row < chip_info.num_rows-1; row++) {
             // Check if both adjacent rows are free at this site
             if (!pin_occupied[row][site] && !pin_occupied[row+1][site]) {
                 int y = chip_info.getRowY(row);
                 
-                // Determine staple type based on balance
-                bool should_be_vdd = determineStapleType(row, current_vdd, current_vss);
+                // Type is determined by row position, not balance
+                bool is_vdd = determineStapleTypeByRow(row);
                 
-                candidates.push_back(Staple(x, y, should_be_vdd));
+                candidates.push_back(Staple(x, y, is_vdd));
             }
         }
         
@@ -170,19 +150,81 @@ private:
     }
     
     /**
-     * @brief Determine if a staple should be VDD or VSS based on balance
+     * @brief Determine staple type based on row position
+     * Even rows (0,2,4,...) connect to VDD rails
+     * Odd rows (1,3,5,...) connect to VSS rails
      */
-    bool determineStapleType(int row, int current_vdd, int current_vss) {
-        // First priority: ensure we have at least one of each type
-        if (current_vdd == 0) return true;
-        if (current_vss == 0) return false;
+    bool determineStapleTypeByRow(int row_boundary) {
+        // A staple at row_boundary connects rows (row_boundary-1) and row_boundary
+        // The type is determined by the lower row
+        return ((row_boundary) % 2 == 0);  // true for VDD, false for VSS
+    }
+
+    /**
+     * @brief Remove staples to satisfy balance constraint
+     * Intelligently removes staples from majority type while avoiding staggering
+     */
+    std::vector<Staple> enforceBalanceConstraint(std::vector<Staple>& staples, int vdd_count, int vss_count) {
         
-        // Second priority: maintain balance
-        if (current_vdd < current_vss) return true;
-        if (current_vss < current_vdd) return false;
+        // Determine which type to reduce
+        bool reduce_vdd = (vdd_count > vss_count);
+        int target_count = (int)(std::min(vdd_count, vss_count) * 1.1);
+        int to_remove = (reduce_vdd ? vdd_count : vss_count) - target_count;
         
-        // If equal, alternate based on row for spatial distribution
-        return (row % 2 == 0);
+        std::cout << "Balance enforcement: need to remove " << to_remove 
+                << " " << (reduce_vdd ? "VDD" : "VSS") << " staples" << std::endl;
+        
+        // Sort staples by a removal priority (e.g., prefer removing isolated staples)
+        std::vector<size_t> removal_candidates;
+        for (size_t i = 0; i < staples.size(); i++) {
+            if (staples[i].is_vdd == reduce_vdd) {
+                removal_candidates.push_back(i);
+            }
+        }
+
+        std::cout << "removal_candidates size: " << removal_candidates.size() << std::endl;
+        
+        // Try removing staples one by one, checking for staggering
+        std::vector<bool> removed(staples.size(), false);
+        int removed_count = 0;
+        
+        for (size_t idx : removal_candidates) {
+            if (removed_count >= to_remove) break;
+            
+            // Try removing this staple
+            removed[idx] = true;
+            
+            // Check if removal creates staggering violations
+            if (!checkStaggeringAfterRemoval(staples, removed)) {
+                // Removal would create staggering, undo
+                removed[idx] = false;
+            } else {
+                removed_count++;
+            }
+        }
+        
+        // Create final staple list
+        std::vector<Staple> balanced_staples;
+        for (size_t i = 0; i < staples.size(); i++) {
+            if (!removed[i]) {
+                balanced_staples.push_back(staples[i]);
+            }
+        }
+        
+        // Verify final balance
+        vdd_count = vss_count = 0;
+        for (const Staple& s : balanced_staples) {
+            if (s.is_vdd) vdd_count++;
+            else vss_count++;
+        }
+        
+        double ratio = (double)std::max(vdd_count, vss_count) / 
+                (double)std::min(vdd_count, vss_count);
+        
+        std::cout << "After balance enforcement: VDD=" << vdd_count 
+                << ", VSS=" << vss_count << ", ratio=" << ratio << std::endl;
+        
+        return balanced_staples;
     }
     
     /**
@@ -256,6 +298,54 @@ private:
         
         
     }
+
+    /**
+     * @brief Check if removing staples creates new staggering violations
+     */
+    bool checkStaggeringAfterRemoval(const std::vector<Staple>& staples, 
+                                    const std::vector<bool>& removed) {
+        // Build active staple positions
+        std::set<std::pair<int, int>> active_positions;
+        
+        for (size_t i = 0; i < staples.size(); i++) {
+            if (!removed[i]) {
+                int site = staples[i].x / chip_info.site_width;
+                int row = (staples[i].y - chip_info.bottom_y) / chip_info.row_height;
+                active_positions.insert({site, row});
+            }
+        }
+        
+        // Check all pairs of remaining staples for staggering
+        for (const auto& pos1 : active_positions) {
+            for (const auto& pos2 : active_positions) {
+                if (pos1 == pos2) continue;
+                
+                // Use the existing staggering check logic
+                if (hasStaggeringViolation(pos1.first, pos1.second, 
+                                        pos2.first, pos2.second)) {
+                    // But we need to check if blockers exist among active staples
+                    int lower_site, lower_row, upper_site, upper_row;
+                    if (pos1.second < pos2.second) {
+                        lower_site = pos1.first; lower_row = pos1.second;
+                        upper_site = pos2.first; upper_row = pos2.second;
+                    } else {
+                        lower_site = pos2.first; lower_row = pos2.second;
+                        upper_site = pos1.first; upper_row = pos1.second;
+                    }
+                    
+                    // Check blockers among active staples only
+                    bool has_blocker_above = active_positions.count({lower_site, lower_row + 2}) > 0;
+                    bool has_blocker_below = active_positions.count({upper_site, upper_row - 2}) > 0;
+                    
+                    if (!has_blocker_above && !has_blocker_below) {
+                        return false;  // Staggering violation found
+                    }
+                }
+            }
+        }
+        
+        return true;  // No staggering violations
+    }
 };
 
 /**
@@ -268,5 +358,8 @@ std::vector<Staple> generateSimpleInitialSolution(const ChipInfo& chip_info,
     InitialStapleGenerator generator(chip_info, cell_types, cells);
     return generator.generateInitialStaples();
 }
+
+
+
 
 #endif // INITIAL_STAPLE_GENERATOR_HPP

@@ -58,7 +58,6 @@ Solution Optimizer::run() {
         Solution solution;
         solution.refined_cells = cells;  // Keep original positions
         solution.inserted_staples = inserted_staples;
-        // solution.inserted_staples = generateSimpleInitialStaplesFixed(chip_info, cell_types, cells);
         solution.updateStats();
         
         auto end_time = std::chrono::high_resolution_clock::now();
@@ -73,13 +72,12 @@ Solution Optimizer::run() {
     }
     
     // Option 2: Original complex DP algorithm
-    // 清空staples列表 - 確保乾淨開始
     inserted_staples.clear();
     // Solve the problem by processing triple-row subproblems
     std::vector<Staple> prev_staples;
     Logger::log("Processing " + std::to_string((chip_info.num_rows + 1) / 2) + " triple-row subproblems");
     
-    int total_new_staples = 0;  // 新增：追蹤總的新增staples
+    int total_new_staples = 0; 
 
     // Use increaseIndent() for nested logs
     Logger::increaseIndent();
@@ -100,10 +98,8 @@ Solution Optimizer::run() {
                     " to " + std::to_string(row+2));
         int row_end = std::min(row + 3, chip_info.num_rows);
         
-        // 解決subproblem並獲得這一輪的新staples
         std::vector<Staple> new_staples_this_round = solveTripleRow(row, row_end, prev_staples);
-        
-        // 修正：正確累積staples
+
         inserted_staples.insert(inserted_staples.end(), 
                                new_staples_this_round.begin(), 
                                new_staples_this_round.end());
@@ -113,7 +109,7 @@ Solution Optimizer::run() {
         Logger::log("Cumulative staples so far: " + std::to_string(inserted_staples.size()));
         std::cout << "Cumulative total staples: " << inserted_staples.size() << std::endl;
         
-        // 更新prev_staples for next iteration - 這裡可能需要包含所有之前的staples
+        // Update prev_staples for next iteration
         prev_staples.insert(prev_staples.end(), 
                            new_staples_this_round.begin(), 
                            new_staples_this_round.end());
@@ -161,7 +157,7 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
     Logger::log("Starting triple-row optimization for rows " + std::to_string(row_start) + 
                 " to " + std::to_string(row_end-1));
     
-    // 提取cells for each row in the triple-row problem
+    // Cells for each row in the triple-row problem
     std::vector<std::vector<Cell*>> cells_in_rows;
     for (int r = row_start; r < row_end; r++) {
         if (r < static_cast<int>(cells_by_row.size())) {
@@ -176,12 +172,12 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
         cells_in_rows.push_back(std::vector<Cell*>());
     }
     
-    // Create DPSolver instance - 關鍵：每次創建新的instance
+    // Create DPSolver instance 
     DPSolver dp_solver(chip_info, cell_types, params);
     
     auto start_time = std::chrono::high_resolution_clock::now();
     
-    // 解決這個triple-row subproblem
+    // Solve triple-row subproblem
     std::vector<Staple> new_staples_this_round = dp_solver.solveTripleRow(
         cells_in_rows, row_start, prev_staples);
 
@@ -192,7 +188,6 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
         end_time - start_time);
     
-    // 修正：顯示THIS round的實際新增staples
     std::cout << "Triple-row optimization completed in " << duration.count() 
               << " ms. Inserted " << new_staples_this_round.size() 
               << " NEW staples (this round only)." << std::endl;
@@ -200,7 +195,6 @@ std::vector<Staple> Optimizer::solveTripleRow(int row_start, int row_end,
     Logger::log("Triple-row subproblem completed: " + 
                 std::to_string(new_staples_this_round.size()) + " NEW staples inserted");
     
-    // 重要：只返回這一輪新增的staples
     return new_staples_this_round;
 }
 
